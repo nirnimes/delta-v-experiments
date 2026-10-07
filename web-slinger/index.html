@@ -108,9 +108,9 @@ body.touch .readout { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0p
     <h1>Web <span>Slinger</span></h1>
     <dl class="controls">
       <dt>Swing</dt><dd>Hold <kbd>Left click</kbd> or <kbd>Shift</kbd>. Webs find buildings for you. Keep holding to chain swings.</dd>
-      <dt>Jump</dt><dd><kbd>Space</kbd>. Tap it mid-swing for a big release boost.</dd>
-      <dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> steer · mouse looks · run into walls to wall-run</dd>
-      <dt>Zip</dt><dd><kbd>Right click</kbd> or <kbd>E</kbd> pulls you to the marked spot. Ledges launch you up.</dd>
+      <dt>Jump</dt><dd><kbd>Space</kbd>. Tap it just past the low point of a swing for a big boost. In the air it web-zips you forward.</dd>
+      <dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> steer · mouse looks · steer into a wall to run up it</dd>
+      <dt>Zip</dt><dd><kbd>Right click</kbd> or <kbd>E</kbd> pulls you to the marked spot. At a ledge, tap <kbd>Space</kbd> as you arrive to launch.</dd>
       <dt>Dive</dt><dd>Hold <kbd>C</kbd> to dive and build speed for the next swing.</dd>
       <dt>Gamepad</dt><dd>R2 swing · A / ✕ jump · L2 zip · B / ◯ dive</dd>
     </dl>
@@ -297,13 +297,14 @@ function boxFaces(B, x0, y0, z0, x1, y1, z1, color, uo, withRoof, roofColor) {
 }
 
 const TINTS = ['#e3d6c3', '#c9c6c0', '#b98a74', '#a9bcd2', '#d8cbb5', '#8d9aa8', '#c49a7c', '#dcc9a6', '#9fb0a0'].map(c => new THREE.Color(c));
-const ROOFC = new THREE.Color('#6e6a66'), LEDGE = new THREE.Color('#8b857c');
+const LEDGE = new THREE.Color('#8b857c');
 
 function addTier(x0, z0, x1, z1, y0, y1, tint, uo) {
   boxes.push({ minX: x0, maxX: x1, minY: y0, maxY: y1, minZ: z0, maxZ: z1, q: 0 });
-  boxFaces(wall, x0, y0, z0, x1, y1, z1, tint, uo, true, ROOFC);
-  const m = 0.6; // cornice ledge
-  boxFaces(roof, x0 - m, y1 - 0.8, z0 - m, x1 + m, y1 + 0.25, z1 + m, LEDGE, 0, true, LEDGE);
+  boxFaces(wall, x0, y0, z0, x1, y1, z1, tint, uo, false);
+  // cornice ledge; its top is the visible roof and sits flush with the collision top so feet rest on it
+  const m = 0.6;
+  boxFaces(roof, x0 - m, y1 - 1.05, z0 - m, x1 + m, y1, z1 + m, LEDGE, 0, true, LEDGE);
 }
 
 function addBuilding(x0, z0, x1, z1, h) {
@@ -411,6 +412,9 @@ scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ vertexColors: true, 
   }
 }
 
+// water towers collide too (4.8 m wide, so the roof filters for tokens and spawn skip them)
+for (const t of towers) boxes.push({ minX: t.x - 2.4, maxX: t.x + 2.4, minY: t.y, maxY: t.y + 8, minZ: t.z - 2.4, maxZ: t.z + 2.4, q: 0, prop: true });
+
 // spatial grid for collision and anchor queries
 const GRID = 40, grid = new Map();
 const gkey = (i, j) => i * 4096 + j;
@@ -424,11 +428,11 @@ boxes.forEach((b, idx) => {
 });
 let qid = 0;
 const near = [];
+// boxes whose grid cells overlap the square x±radius, z±radius. Returns a shared array: copy it before querying again.
 function query(x, z, radius) {
   qid++; near.length = 0;
-  const r = Math.ceil(radius / GRID);
-  const ci = Math.floor(x / GRID), cj = Math.floor(z / GRID);
-  for (let i = ci - r; i <= ci + r; i++) for (let j = cj - r; j <= cj + r; j++) {
+  const i1 = Math.floor((x + radius) / GRID), j0 = Math.floor((z - radius) / GRID), j1 = Math.floor((z + radius) / GRID);
+  for (let i = Math.floor((x - radius) / GRID); i <= i1; i++) for (let j = j0; j <= j1; j++) {
     const list = grid.get(gkey(i, j));
     if (!list) continue;
     for (const idx of list) { const b = boxes[idx]; if (b.q !== qid) { b.q = qid; near.push(b); } }
@@ -436,31 +440,67 @@ function query(x, z, radius) {
   return near;
 }
 function insideAny(pt) {
-  for (const b of query(pt.x, pt.z, 1)) {
+  for (const b of query(pt.x, pt.z, 0)) {
     if (pt.x > b.minX && pt.x < b.maxX && pt.z > b.minZ && pt.z < b.maxZ && pt.y < b.maxY && pt.y > b.minY) return true;
   }
   return false;
 }
-function raycast(o, d, maxT) {
-  let best = maxT, hitBox = null, hitN = null;
-  const os = [o.x, o.y, o.z], ds = [d.x, d.y, d.z];
-  for (const b of boxes) {
-    let tmin = 0, tmax = best, nAxis = -1, nSign = 0, ok = true;
-    const mins = [b.minX, b.minY, b.minZ], maxs = [b.maxX, b.maxY, b.maxZ];
-    for (let a = 0; a < 3; a++) {
-      if (Math.abs(ds[a]) < 1e-9) { if (os[a] < mins[a] || os[a] > maxs[a]) { ok = false; break; } continue; }
-      let t1 = (mins[a] - os[a]) / ds[a], t2 = (maxs[a] - os[a]) / ds[a], s = -1;
-      if (t1 > t2) { const tt = t1; t1 = t2; t2 = tt; s = 1; }
-      if (t1 > tmin) { tmin = t1; nAxis = a; nSign = s; }
-      if (t2 < tmax) tmax = t2;
-      if (tmin > tmax) { ok = false; break; }
-    }
-    if (ok && nAxis >= 0 && tmin < best) {
-      best = tmin; hitBox = b;
-      hitN = new V3(nAxis === 0 ? nSign : 0, nAxis === 1 ? nSign : 0, nAxis === 2 ? nSign : 0);
-    }
+function sphereHits(pt, r) {
+  for (const b of query(pt.x, pt.z, r)) {
+    const dx = pt.x - clamp(pt.x, b.minX, b.maxX), dy = pt.y - clamp(pt.y, b.minY, b.maxY), dz = pt.z - clamp(pt.z, b.minZ, b.maxZ);
+    if (dx * dx + dy * dy + dz * dz < r * r) return true;
   }
-  return hitBox ? { t: best, box: hitBox, n: hitN, p: o.clone().addScaledVector(d, best) } : null;
+  return false;
+}
+// first box hit by the ray o + d*t (d normalized), t < maxT. Walks the grid cells along the ray and allocates nothing:
+// the result object is shared, so copy what you keep. Boxes containing the origin are ignored.
+const rayHit = { t: 0, box: null, n: new V3(), p: new V3() };
+function raycast(o, d, maxT) {
+  qid++;
+  let best = maxT, hitBox = null, nAxis = -1, nSign = 0;
+  let ci = Math.floor(o.x / GRID), cj = Math.floor(o.z / GRID);
+  const si = d.x > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
+  const ax = Math.abs(d.x), az = Math.abs(d.z);
+  const stepX = ax > 1e-9 ? GRID / ax : Infinity, stepZ = az > 1e-9 ? GRID / az : Infinity;
+  let tx = ax > 1e-9 ? (d.x > 0 ? (ci + 1) * GRID - o.x : o.x - ci * GRID) / ax : Infinity;
+  let tz = az > 1e-9 ? (d.z > 0 ? (cj + 1) * GRID - o.z : o.z - cj * GRID) / az : Infinity;
+  for (let guard = 0; guard < 64; guard++) {
+    const list = grid.get(gkey(ci, cj));
+    if (list) for (const idx of list) {
+      const b = boxes[idx];
+      if (b.q === qid) continue;
+      b.q = qid;
+      let tmin = 0, tmax = best, axis = -1, sign = 0, ok = true;
+      for (let a = 0; a < 3 && ok; a++) {
+        const oa = a === 0 ? o.x : a === 1 ? o.y : o.z, da = a === 0 ? d.x : a === 1 ? d.y : d.z;
+        const mn = a === 0 ? b.minX : a === 1 ? b.minY : b.minZ, mx = a === 0 ? b.maxX : a === 1 ? b.maxY : b.maxZ;
+        if (Math.abs(da) < 1e-9) { if (oa < mn || oa > mx) ok = false; continue; }
+        let t1 = (mn - oa) / da, t2 = (mx - oa) / da, s = -1;
+        if (t1 > t2) { const tt = t1; t1 = t2; t2 = tt; s = 1; }
+        if (t1 > tmin) { tmin = t1; axis = a; sign = s; }
+        if (t2 < tmax) tmax = t2;
+        if (tmin > tmax) ok = false;
+      }
+      if (ok && axis >= 0 && tmin < best) { best = tmin; hitBox = b; nAxis = axis; nSign = sign; }
+    }
+    const tNext = Math.min(tx, tz);
+    if (tNext > best || tNext > maxT) break;
+    if (tx < tz) { ci += si; tx += stepX; } else { cj += sj; tz += stepZ; }
+  }
+  if (!hitBox) return null;
+  rayHit.t = best; rayHit.box = hitBox;
+  rayHit.n.set(nAxis === 0 ? nSign : 0, nAxis === 1 ? nSign : 0, nAxis === 2 ? nSign : 0);
+  rayHit.p.copy(o).addScaledVector(d, best);
+  return rayHit;
+}
+const segDir = new V3();
+// true when the straight segment a -> b (minus `trim` metres at the b end) passes through a box
+function segmentBlocked(a, b, trim) {
+  segDir.subVectors(b, a);
+  const L = segDir.length();
+  if (L <= trim + 0.01) return false;
+  segDir.multiplyScalar(1 / L);
+  return raycast(a, segDir, L - trim) !== null;
 }
 
 // ---------------------------------------------------------------- tokens
@@ -468,11 +508,14 @@ const tokenMat = new THREE.MeshStandardMaterial({ color: '#ffc35a', emissive: '#
 const tokenGeo = new THREE.OctahedronGeometry(1.3, 0);
 const tokens = [];
 {
-  const roofTops = boxes.filter(b => b.maxX - b.minX > 8 && b.maxY < 300);
+  // only roofs with open sky above them; the centre of a lower tier is covered by the tier on top
+  const roofTops = boxes.filter(b => b.maxX - b.minX > 8 && b.maxY < 300 && !b.prop && !insideAny(new V3((b.minX + b.maxX) / 2, b.maxY + 2.5, (b.minZ + b.maxZ) / 2)));
   const spots = [];
-  for (let i = 0; i < 24; i++) {
+  while (spots.length < 24) {
     const b = roofTops[(rnd() * roofTops.length) | 0];
-    spots.push(new V3((b.minX + b.maxX) / 2, b.maxY + 2.5, (b.minZ + b.maxZ) / 2));
+    const s = new V3((b.minX + b.maxX) / 2, b.maxY + 2.5, (b.minZ + b.maxZ) / 2);
+    if (sphereHits(s, 1.3) || spots.some(o => o.distanceTo(s) < 6)) continue; // a water tower stands there, or a repeat
+    spots.push(s);
   }
   for (let i = 0; i < 16; i++) {
     const gi = 1 + ((rnd() * (N - 1)) | 0), gj = 1 + ((rnd() * (N - 1)) | 0);
@@ -551,23 +594,48 @@ zipMarker.renderOrder = 10; zipMarker.visible = false; scene.add(zipMarker);
 
 // ---------------------------------------------------------------- player state
 const R = 1.0, G = 34, MAX_SPEED = 80;
+// physics runs at a fixed rate, decoupled from rendering; a frame catches up at most 0.1 s (slower than 10 fps runs slow)
+const PHYS_HZ = 120, STEP = 1 / PHYS_HZ, MAX_STEPS = 12;
+const JUMP_BUFFER = 0.15;   // a jump pressed this early still counts when it becomes possible (landing, web)
+const WEB_GRACE = 0.25;     // a jump this soon after a web lets go is still a swing jump
+const ROPE_MIN = 7, STREET_CLEAR = R + 1.5, ROPE_PULL = 600;   // ROPE_PULL: most a rope can turn your velocity, m/s per second
+const REEL_FRAC = 0.9, REEL_RATE = 12;  // a new web reels in to 90% of its length at 12 m/s: a tug instead of a snap
+const LAT_KEEP = 0.35;      // share of the anchor's sideways offset the swing plane keeps (the rest would pull you into the facade)
+const ASSIST = 2.5;         // steering assist: rate at which sideways drift off the travel line is redirected forward
+const CRUISE = 40;          // the downswing pushes toward this speed
 const p = {
-  pos: new V3(), vel: new V3(), heading: new V3(0, 0, 1),
-  onGround: false, wallN: null, wallRun: null, wallCool: 0,
-  web: null, zip: null, reattach: 0, runPhase: 0, runTime: 0
+  pos: new V3(), vel: new V3(), prev: new V3(), heading: new V3(0, 0, 1),
+  travel: new V3(0, 0, 1),  // intended direction while swinging: steers anchors and the assist
+  onGround: false, wallN: null, wallHit: 0, wallBox: null, wallRun: null, wallCool: 0, jumpN: new V3(),
+  web: null, zip: null, reattach: 0, runPhase: 0, runTime: 0,
+  airZips: 2, zipFx: 0, zipFxPoint: new V3(), releaseAt: -9, releaseTheta: 0, perchAt: -9, perchSpeed: 0, webAt: -9
 };
+const drawPos = new V3();   // p.pos interpolated between physics steps, for rendering
+let simTime = 0, simAcc = 0, jumpBuf = 0, jumpAt = -9, zipBuf = 0, swingTap = false, swingWas = false;
 const cam = { yaw: 0, pitch: 0.1, dist: 7, fov: 68, target: new V3() };
+function teleport(pos, vel, yaw, pitch = 0.12) {
+  p.pos.copy(pos); p.prev.copy(pos); drawPos.copy(pos); p.vel.copy(vel);
+  p.web = p.zip = p.wallRun = p.wallN = p.wallBox = null;
+  p.onGround = false; p.reattach = p.wallCool = p.zipFx = 0; p.airZips = 2;
+  p.releaseAt = p.perchAt = p.webAt = -9;
+  jumpBuf = zipBuf = simAcc = 0; swingTap = false;
+  p.travel.set(Math.sin(yaw), 0, Math.cos(yaw)); p.heading.copy(p.travel);
+  cam.yaw = yaw; cam.pitch = pitch;
+  cam.target.copy(pos); cam.target.y += 1.3;
+}
+// Start on a mid-height roof (open sky above it) near (200, 200), at the edge that faces the landmark, looking down
+// the street: holding swing from there leaps straight into a swing chain toward downtown.
 function spawn() {
-  const score = b => Math.hypot((b.minX + b.maxX) / 2 - 60, (b.minZ + b.maxZ) / 2 - 260);
-  const cand = boxes.filter(b => b.maxY > 35 && b.maxY < 70 && b.maxX - b.minX > 12).sort((a, b) => score(a) - score(b))[0];
-  p.pos.set((cand.minX + cand.maxX) / 2, cand.maxY + R + 0.3, (cand.minZ + cand.maxZ) / 2);
-  p.vel.set(0, 0, 0);
-  p.web = null; p.zip = null; p.wallRun = null;
-  const toTower = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45).sub(p.pos).setY(0).normalize();
-  p.heading.copy(toTower);
-  cam.yaw = Math.atan2(toTower.x, toTower.z);
-  cam.pitch = 0.12;
-  cam.target.copy(p.pos);
+  const tower = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45);
+  const covered = b => boxes.some(o => o !== b && !o.prop && o.minY >= b.maxY - 0.01 && o.minX < b.maxX && o.maxX > b.minX && o.minZ < b.maxZ && o.maxZ > b.minZ);
+  const score = b => Math.hypot((b.minX + b.maxX) / 2 - 200, (b.minZ + b.maxZ) / 2 - 200);
+  const b = boxes.filter(o => !o.prop && o.maxY > 30 && o.maxY < 60 && o.maxX - o.minX > 12 && o.maxZ - o.minZ > 12 && !covered(o))
+    .sort((a, c) => score(a) - score(c))[0];
+  const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2, tx = tower.x - cx, tz = tower.z - cz;
+  const alongX = Math.abs(tx) > Math.abs(tz), sx = Math.sign(tx), sz = Math.sign(tz);
+  const at = new V3(alongX ? (sx > 0 ? b.maxX : b.minX) - sx * 1.5 : cx, b.maxY + R + 0.02, alongX ? cz : (sz > 0 ? b.maxZ : b.minZ) - sz * 1.5);
+  if (sphereHits(at, R)) at.set(cx, b.maxY + R + 0.02, cz);   // a water tower on that edge
+  teleport(at, new V3(), alongX ? Math.atan2(sx, 0) : Math.atan2(0, sz), 0.05);
 }
 
 // ---------------------------------------------------------------- input
@@ -729,78 +797,312 @@ function camBasis() {
 function angleDiff(a, b) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; }
 
 // ---------------------------------------------------------------- gameplay
-const tmp = new V3(), tmp2 = new V3(), moveDir = new V3();
+const tmp = new V3(), tmp2 = new V3(), tmp3 = new V3(), moveDir = new V3();
 let tokensTaken = 0, topSpeed = 0;
 
-function findAnchor() {
-  const hv = new V3(p.vel.x, 0, p.vel.z);
-  const hs = hv.length();
-  const pref = hs > 4 ? hv.multiplyScalar(1 / hs) : camF.clone();
-  if (moveDir.lengthSq() > 0.01) pref.addScaledVector(moveDir, 0.9).normalize();
-  const ideal = p.pos.clone().addScaledVector(pref, 14 + hs * 0.35);
-  ideal.y += 16 + Math.min(hs, 60) * 0.2;
-  let best = null, bestScore = 1e9;
-  for (const b of query(ideal.x, ideal.z, 70)) {
-    const c = new V3(clamp(ideal.x, b.minX, b.maxX), clamp(ideal.y, b.minY, b.maxY), clamp(ideal.z, b.minZ, b.maxZ));
-    if (ideal.x > b.minX && ideal.x < b.maxX && ideal.z > b.minZ && ideal.z < b.maxZ && ideal.y < b.maxY) {
-      const dists = [ideal.x - b.minX, b.maxX - ideal.x, ideal.z - b.minZ, b.maxZ - ideal.z];
-      const k = dists.indexOf(Math.min(...dists));
-      if (k === 0) c.x = b.minX; else if (k === 1) c.x = b.maxX; else if (k === 2) c.z = b.minZ; else c.z = b.maxZ;
+// 1 while velocity along the steering direction is under `top` m/s, fading to 0 at top + 4: steering turns you
+// without becoming a free engine
+function steerRoom(vel, dir, top) {
+  const m = Math.hypot(dir.x, dir.z);
+  if (m < 0.01) return 0;
+  return clamp((top + 4 - (vel.x * dir.x + vel.z * dir.z) / m) / 4, 0, 1);
+}
+// Swing physics, shared by the live swing and by the anchor check's look-ahead.
+// w = { pivot, len, goal, age }: pivot is the physics fulcrum (see setPivot), goal the length the rope reels in to.
+function ropeStep(pos, vel, w, travel, dt) {
+  const hs = Math.hypot(vel.x, vel.z);
+  vel.y -= G * dt;
+  // steering bends the swing; it adds no speed in a direction you already move fast in
+  vel.addScaledVector(moveDir, 16 * dt * steerRoom(vel, moveDir, 20));
+  // steering assist: drift off the travel line is bled off and mostly handed to forward speed
+  const along = vel.x * travel.x + vel.z * travel.z;
+  const lx = vel.x - travel.x * along, lz = vel.z - travel.z * along;
+  const k = 1 - Math.exp(-ASSIST * dt), gain = Math.hypot(lx, lz) * k * 0.8;
+  vel.x -= lx * k; vel.z -= lz * k;
+  if (along > 0) { vel.x += travel.x * gain; vel.z += travel.z * gain; }
+  // the downswing pushes toward cruise speed so chains keep flowing; well above it, the swing slowly bleeds speed
+  if (vel.y < 0 && hs > 2 && hs < CRUISE) { vel.x += vel.x / hs * 12 * dt; vel.z += vel.z / hs * 12 * dt; }
+  const sp = vel.length(), over = sp - CRUISE - 6;
+  if (over > 0 && sp < MAX_SPEED) vel.multiplyScalar(1 - over / sp * 0.5 * dt);
+  w.age += dt;
+  if (w.len > w.goal) w.len = Math.max(w.goal, w.len - REEL_RATE * dt);
+  pos.addScaledVector(vel, dt);
+  const d = tmp3.subVectors(pos, w.pivot), dist = d.length();
+  // the rope takes in slack as you move toward the fulcrum, so it never snaps tight from far out
+  if (dist < w.len) w.len = Math.max(ROPE_MIN, dist);
+  if (dist > w.len) {
+    d.multiplyScalar(1 / dist);
+    const vr = vel.dot(d), take = Math.min(Math.max(vr, 0), ROPE_PULL * dt);
+    if (take > 0) {
+      // a taut rope turns speed along the arc instead of deleting it
+      const sp0 = vel.length();
+      vel.addScaledVector(d, -take);
+      const sp1 = vel.length();
+      if (sp1 > 0.5) vel.multiplyScalar(sp0 / sp1);
     }
-    if (c.y < p.pos.y + 4) continue;
-    tmp2.subVectors(c, p.pos);
-    const L = tmp2.length();
-    if (L < 8 || L > 85) continue;
-    if (tmp2.dot(pref) < -2) continue;
-    const score = c.distanceTo(ideal);
-    if (score < bestScore) { bestScore = score; best = c; }
+    // a hard catch is spread over a few steps (the rope gives a little) instead of yanking in one
+    if (take < vr) w.len = dist;
+    else pos.copy(w.pivot).addScaledVector(d, w.len);
   }
-  if (best && bestScore < 45) return { point: best, sky: false };
-  // open air: always give the player something to swing from, but a lower one so long chains drift down
-  if (p.pos.y < 330) { ideal.y = p.pos.y + 12; return { point: ideal, sky: true }; }
-  return null;
+}
+// past the forward apex, level with the fulcrum, or circling it: let go so the next web can take over
+function swingDone(pos, vel, w) {
+  if (pos.y > w.pivot.y - 1.5 || w.age > 2.6) return true;
+  const h = Math.hypot(vel.x, vel.z);
+  if (h < 2 || w.age < 0.35 || vel.y < -1) return false;
+  return w.age > 1.6 || ((pos.x - w.pivot.x) * vel.x + (pos.z - w.pivot.z) * vel.z) / h > w.len * 0.38;
+}
+// rope angle past the bottom of the arc, measured along the direction of travel (negative on the way down)
+function swingTheta(w) {
+  const h = Math.hypot(p.vel.x, p.vel.z);
+  const ahead = h > 0.5 ? ((p.pos.x - w.pivot.x) * p.vel.x + (p.pos.z - w.pivot.z) * p.vel.z) / h : 0;
+  return Math.atan2(ahead, Math.max(0.1, w.pivot.y - p.pos.y));
+}
+
+const aheadPos = new V3(), aheadVel = new V3(), aheadTravel = new V3(), aheadWeb = { pivot: new V3(), len: 0, goal: 0, age: 0 };
+// follow a candidate swing until it would let go: seconds until it runs into a building or down to the street, else Infinity
+function swingContact(pivot, len, goal) {
+  aheadPos.copy(p.pos); aheadVel.copy(p.vel);
+  aheadWeb.pivot.copy(pivot); aheadWeb.len = len; aheadWeb.goal = goal; aheadWeb.age = 0;
+  aheadTravel.copy(pref);
+  for (let i = 1; i <= 66; i++) {
+    steerTravel(aheadTravel, 1 / 30);
+    ropeStep(aheadPos, aheadVel, aheadWeb, aheadTravel, 1 / 30);
+    if (aheadPos.y < R + 0.4 || sphereHits(aheadPos, R + 0.25)) return i / 30;
+    if (swingDone(aheadPos, aheadVel, aheadWeb)) return Infinity;
+  }
+  return Infinity;
+}
+
+// Anchors are real points on building faces that face the hero, preferring the roofline, a little ahead and to the side.
+const CAND_MAX = 600;
+const cand = Array.from({ length: CAND_MAX }, () => ({ c: new V3(), nx: 0, nz: 0, score: 0 }));
+const candOrder = [];
+let candN = 0;
+const pref = new V3(), ideal = new V3(), handPt = new V3();
+const found = { anchor: new V3(), pivot: new V3(), len: 0, goal: 0 };
+function gatherFaces(b, fwdMin) {
+  if (b.prop) return;
+  const px = p.pos.x, pz = p.pos.z, minFwd = 14 - 0.2 * Math.hypot(p.vel.x, p.vel.z);
+  for (let k = 0; k < 4; k++) {
+    // k: 0 = -x face, 1 = +x face, 2 = -z face, 3 = +z face. A web can't reach a face the hero is behind.
+    if (k === 0 ? px > b.minX - 0.5 : k === 1 ? px < b.maxX + 0.5 : k === 2 ? pz > b.minZ - 0.5 : pz < b.maxZ + 0.5) continue;
+    let y = clamp(ideal.y, b.minY + 2, b.maxY);
+    if (b.maxY - y < 8) y = b.maxY;
+    if (y < p.pos.y + 5 || y < ROPE_MIN + STREET_CLEAR) continue;
+    const out = y > b.maxY - 1.05 ? 0.6 : 0;   // on the cornice, which overhangs the wall
+    let x, z;
+    if (k < 2) { x = k === 0 ? b.minX - out : b.maxX + out; z = clamp(ideal.z, b.minZ + 0.4, b.maxZ - 0.4); }
+    else { z = k === 2 ? b.minZ - out : b.maxZ + out; x = clamp(ideal.x, b.minX + 0.4, b.maxX - 0.4); }
+    const dx = x - px, dy = y - p.pos.y, dz = z - pz;
+    const L = Math.hypot(dx, dy, dz);
+    if (L < 8 || L > 85) continue;
+    const fwd = dx * pref.x + dz * pref.z;
+    if (fwd < fwdMin) continue;
+    const side = Math.abs(dx * pref.z - dz * pref.x);
+    const facing = k === 0 ? -pref.x : k === 1 ? pref.x : k === 2 ? -pref.z : pref.z;   // face normal . travel
+    let score = Math.hypot(x - ideal.x, y - ideal.y, z - ideal.z) + 0.5 * Math.max(0, side - 14);
+    score += 1.5 * Math.max(0, minFwd - fwd);   // an anchor nearly overhead gives a slow start no swing to speak of
+    if (facing < -0.6) score += 8;   // a wall square across the path: the swing would carry you into it
+    if (y === b.maxY) score -= 3;
+    if (candN < CAND_MAX) { const o = cand[candN++]; o.c.set(x, y, z); o.nx = k === 0 ? -1 : k === 1 ? 1 : 0; o.nz = k === 2 ? -1 : k === 3 ? 1 : 0; o.score = score; }
+  }
+}
+const streetRay = new V3(), streetFrom = new V3();
+// The swing's fulcrum. For a facade alongside the travel line it sits over the middle of the street, so the swing
+// carries you down the street instead of pulling you into the wall; otherwise it's the anchor with most of its
+// sideways offset from the travel line removed.
+function setPivot(o, out) {
+  const c = o.c, dx = c.x - p.pos.x, dz = c.z - p.pos.z;
+  if (Math.abs(o.nx * pref.x + o.nz * pref.z) < 0.5) {
+    const heroOff = -(dx * o.nx + dz * o.nz);
+    streetFrom.set(c.x + o.nx * 0.1, clamp(p.pos.y, 2, c.y - 1), c.z + o.nz * 0.1);
+    const hit = raycast(streetFrom, streetRay.set(o.nx, 0, o.nz), 50);
+    const off = hit ? hit.t / 2 : Math.max(heroOff, 6);
+    out.set(c.x + o.nx * off, c.y, c.z + o.nz * off);
+  } else {
+    const f = dx * pref.x + dz * pref.z;
+    out.set(c.x - (dx - pref.x * f) * (1 - LAT_KEEP), c.y, c.z - (dz - pref.z * f) * (1 - LAT_KEEP));
+  }
+}
+// the web for candidate o: the rope starts at its true length and reels toward 90%, but never so long it reaches the street
+function fillFound(o) {
+  setPivot(o, found.pivot);
+  found.len = p.pos.distanceTo(found.pivot);
+  found.goal = Math.max(ROPE_MIN, Math.min(found.len * REEL_FRAC, found.pivot.y - STREET_CLEAR));
+  found.anchor.copy(o.c);
+  return found;
+}
+// Best gathered candidate the hero can see and whose swing stays clear. With `lateOk`, a swing that only touches
+// something after a full second is the fallback when nothing is clear.
+function pickAnchor(arcChecks, lateOk) {
+  candOrder.length = 0;
+  for (let i = 0; i < candN; i++) candOrder.push(i);
+  candOrder.sort((a, b) => cand[a].score - cand[b].score);
+  handPt.copy(p.pos); handPt.y += 0.6;
+  let sights = 0, arcs = 0, late = -1, lateT = 1;
+  for (const i of candOrder) {
+    if (++sights > 30 || arcs >= arcChecks) break;
+    if (segmentBlocked(handPt, cand[i].c, 0.3)) continue;
+    fillFound(cand[i]);
+    arcs++;
+    const t = swingContact(found.pivot, found.len, found.goal);
+    if (t === Infinity) return found;
+    if (lateOk && t > lateT) { late = i; lateT = t; }
+  }
+  return late < 0 ? null : fillFound(cand[late]);
+}
+function findAnchor() {
+  const hs = Math.hypot(p.vel.x, p.vel.z);
+  if (hs > 4) pref.set(p.vel.x / hs, 0, p.vel.z / hs); else pref.copy(camF);
+  if (moveDir.lengthSq() > 0.01) {
+    tmp2.set(moveDir.x, 0, moveDir.z).normalize();
+    if (tmp2.dot(pref) < -0.3) pref.copy(tmp2);   // turning around: aim where the stick points
+    else pref.addScaledVector(tmp2, 0.9).normalize();
+  }
+  // the streets run along x and z: a heading within 30 degrees of one follows that street
+  if (Math.abs(pref.x) > 0.866) pref.set(Math.sign(pref.x), 0, 0);
+  else if (Math.abs(pref.z) > 0.866) pref.set(0, 0, Math.sign(pref.z));
+  if (p.vel.y < -20) {
+    // dive catch: anchor at right angles to the fall, so the rope turns the dive into swing speed
+    tmp2.copy(p.vel).normalize();
+    ideal.set(0, 1, 0).addScaledVector(tmp2, -tmp2.y);
+    if (ideal.lengthSq() < 0.05) ideal.set(pref.x, 1, pref.z);
+    ideal.normalize().multiplyScalar(28).add(p.pos).addScaledVector(pref, 6);
+  } else {
+    ideal.copy(p.pos).addScaledVector(pref, 18 + hs * 0.3);
+    ideal.y += 14 + Math.min(hs, 60) * 0.25;
+  }
+  // near the ideal point first, then anything ahead of or beside the hero; over open ground a swing that only
+  // touches a building late is better than none (hitting a wall mid-swing turns into a wall run)
+  candN = 0;
+  for (const b of query(ideal.x, ideal.z, 50)) gatherFaces(b, 2);
+  if (pickAnchor(8, false)) return found;
+  candN = 0;
+  for (const b of query(p.pos.x, p.pos.z, 80)) gatherFaces(b, -6);
+  return pickAnchor(10, true);
 }
 
 function attach() {
   const a = findAnchor();
-  if (!a) return false;
-  const len = a.point.distanceTo(p.pos);
-  p.web = { anchor: a.point, len: len * 0.9, sky: a.sky, age: 0 };
+  if (!a) { p.reattach = 0.15; return false; }
+  p.web = { anchor: a.anchor.clone(), pivot: a.pivot.clone(), len: a.len, goal: a.goal, age: 0, t0: simTime, tick: 0, sky: false };
+  p.travel.copy(pref);
+  p.airZips = 2; p.webAt = simTime;
   thwip(1 + Math.random() * 0.15);
   return true;
 }
-function release(boost) {
+function release() {
   if (!p.web) return;
+  p.releaseAt = simTime; p.releaseTheta = swingTheta(p.web);
   p.web = null;
-  if (boost && p.vel.length() < MAX_SPEED) { p.vel.multiplyScalar(1.05); p.vel.y += 3; }
+}
+// swing jump: just past the bottom of the arc sends you forward fastest, a later release gives more height
+function swingJump(theta) {
+  const q = clamp(1 - Math.abs(theta - 0.45) / 0.35, 0, 1);
+  const h = tmp.set(p.vel.x, 0, p.vel.z);
+  if (h.lengthSq() > 1) h.normalize(); else h.copy(camF);
+  p.web = null; jumpBuf = 0; p.releaseAt = -9;
+  p.vel.y = Math.max(p.vel.y, 4) + 9 + 9 * clamp(theta, 0, 1);
+  p.vel.addScaledVector(h, 6 + 10 * q);
+  p.reattach = 0.45; p.airZips = 2;
+  const perfect = q > 0.8;
+  thwip(perfect ? 0.75 : 0.6);
+  showToast(perfect ? 'PERFECT SWING JUMP' : 'SWING JUMP');
+}
+// web zip in open air: a quick pull forward along the view, for when there's nothing to swing from
+function airZip() {
+  const d = tmp.copy(lookDir);
+  d.y = Math.max(d.y, 0) + 0.3; d.normalize();
+  const sp = Math.max(Math.hypot(p.vel.x, p.vel.z), 26);
+  p.vel.copy(d).multiplyScalar(sp); p.vel.y = Math.max(p.vel.y, 8);
+  p.airZips--; jumpBuf = 0; p.reattach = Math.max(p.reattach, 0.2);
+  const hit = raycast(p.pos, d, 25);
+  p.zipFxPoint.copy(p.pos).addScaledVector(d, hit ? hit.t : 18);
+  p.zipFx = 0.2;
+  thwip(1.2);
+}
+// ground or a roof close enough below, at this fall speed, that a jump pressed now is meant for the landing
+function landingSoon() {
+  if (p.vel.y > 0) return false;
+  let floor = 0;
+  for (const b of query(p.pos.x, p.pos.z, 0))
+    if (p.pos.x > b.minX && p.pos.x < b.maxX && p.pos.z > b.minZ && p.pos.z < b.maxZ && b.maxY <= p.pos.y) floor = Math.max(floor, b.maxY);
+  return p.pos.y - R - floor < 0.3 - p.vel.y * JUMP_BUFFER;
 }
 
 let zipTarget = null;
+const zipT = { point: new V3(), show: new V3(), launch: false };
+const zipRay = new V3(), zipFrom = new V3();
 function updateZipTarget() {
   zipTarget = null;
-  const origin = camera.position.clone().addScaledVector(lookDir, cam.dist + 1.5);
-  const hit = raycast(origin, lookDir, 150);
+  // aim down the real camera ray, starting level with the hero: a camera pulled in by a wall must not start it inside a building
+  camera.getWorldDirection(zipRay);
+  zipFrom.copy(camera.position).addScaledVector(zipRay, Math.max(0, tmp2.subVectors(p.pos, camera.position).dot(zipRay)));
+  const hit = raycast(zipFrom, zipRay, 150);
   if (!hit) return;
   const b = hit.box;
   if (hit.n.y > 0 || (hit.n.y === 0 && hit.p.y > b.maxY - 7)) {
-    const pt = new V3(hit.p.x, b.maxY + R + 0.2, hit.p.z);
-    if (hit.n.y === 0) pt.addScaledVector(hit.n, -0.8);
-    zipTarget = { point: pt, launch: true, show: new V3(pt.x, b.maxY + 0.4, pt.z) };
+    zipT.point.set(hit.p.x, b.maxY + R + 0.2, hit.p.z);
+    if (hit.n.y === 0) zipT.point.addScaledVector(hit.n, -0.8);
+    zipT.show.set(zipT.point.x, b.maxY + 0.4, zipT.point.z);
+    zipT.launch = true;
   } else {
-    zipTarget = { point: hit.p.clone().addScaledVector(hit.n, R + 0.3), launch: false, show: hit.p.clone().addScaledVector(hit.n, 0.1) };
+    zipT.point.copy(hit.p).addScaledVector(hit.n, R - 0.05);   // just inside touching distance, so you land against it
+    zipT.show.copy(hit.p).addScaledVector(hit.n, 0.1);
+    zipT.launch = false;
   }
+  zipTarget = zipT;
 }
 function startZip() {
-  if (!zipTarget) return;
-  p.web = null; p.wallRun = null;
-  p.zip = { target: zipTarget.point.clone(), launch: zipTarget.launch, t: 0 };
+  p.web = null; p.wallRun = null; zipBuf = 0;
+  p.zip = { target: zipTarget.point.clone(), launch: zipTarget.launch, t: 0, lastD: 1e9, stall: 0, speed: 0 };
   thwip(0.8); setTimeout(() => thwip(0.85), 60);
 }
+function zipMove(dt) {
+  const z = p.zip;
+  z.t += dt;
+  tmp.subVectors(z.target, p.pos);
+  const d = tmp.length(), sp = clamp(d * 8, 6, 70);
+  z.speed = Math.max(z.speed, sp);
+  p.vel.copy(tmp).multiplyScalar(Math.min(sp, d / dt) / Math.max(d, 0.001));   // never overshoot the point
+  p.pos.addScaledVector(p.vel, dt);
+  collide();
+  // snagged on something on the way: stop rather than grind against it until the timeout
+  z.stall = z.lastD - d < 0.02 ? z.stall + dt : 0;
+  z.lastD = d;
+  if (z.launch) {
+    // a launch fires on the way in; a perch settles right on the point
+    if (d < (jumpBuf > 0 || input.swing ? 1.5 : 0.35)) zipArrive(true);
+    else if (z.t > 3 || z.stall > 0.15) zipArrive(false);
+  } else if ((p.wallN && d < 4) || z.t > 3 || z.stall > 0.15) zipArrive(false);
+}
+function zipArrive(reached) {
+  const z = p.zip;
+  p.zip = null; p.reattach = 0.25;
+  if (z.launch && reached) {
+    // a ledge launches you if Jump was just pressed or swing is held; otherwise you perch, and Jump right away still launches
+    if (jumpBuf > 0 || input.swing) pointLaunch(z.speed, jumpBuf > 0 && simTime - jumpAt < 0.08);
+    else { p.vel.set(0, 0, 0); p.perchAt = simTime; p.perchSpeed = z.speed; }
+  } else if (p.wallN && p.wallCool <= 0) {
+    p.vel.set(0, 0, 0);
+    startWallRun(0);   // cling where the zip landed
+  } else p.vel.multiplyScalar(0.3);
+}
+function pointLaunch(speed, perfect) {
+  const k = perfect ? 1.25 : 1;
+  p.vel.copy(camF).multiplyScalar(Math.max(18, speed * 0.4) * k);
+  p.vel.y = 24 * k;
+  p.onGround = false; p.perchAt = -9; p.wallCool = 0.3; p.jumpN.set(0, 0, 0); jumpBuf = 0; p.airZips = 2;
+  thwip(0.7);
+  showToast(perfect ? 'PERFECT LAUNCH' : 'POINT LAUNCH');
+}
 
+const wallNormal = new V3();
 function collide() {
-  p.onGround = false; p.wallN = null;
+  p.onGround = false; p.wallN = null; p.wallBox = null; p.wallHit = 0;
   if (p.pos.y < R) { p.pos.y = R; if (p.vel.y < 0) p.vel.y = 0; p.onGround = true; }
-  for (const b of query(p.pos.x, p.pos.z, 2)) {
+  for (const b of query(p.pos.x, p.pos.z, R)) {
     const cx = clamp(p.pos.x, b.minX, b.maxX), cy = clamp(p.pos.y, b.minY, b.maxY), cz = clamp(p.pos.z, b.minZ, b.maxZ);
     const dx = p.pos.x - cx, dy = p.pos.y - cy, dz = p.pos.z - cz;
     const d2 = dx * dx + dy * dy + dz * dz;
@@ -810,8 +1112,12 @@ function collide() {
       const d = Math.sqrt(d2); nx = dx / d; ny = dy / d; nz = dz / d;
       p.pos.set(cx + nx * R, cy + ny * R, cz + nz * R);
     } else {
+      // centre inside the box: leave through the face it came in by this step, else the shallowest one
       const pen = [p.pos.x - b.minX, b.maxX - p.pos.x, p.pos.z - b.minZ, b.maxZ - p.pos.z, b.maxY - p.pos.y];
-      const k = pen.indexOf(Math.min(...pen));
+      const came = [p.prev.x <= b.minX, p.prev.x >= b.maxX, p.prev.z <= b.minZ, p.prev.z >= b.maxZ, p.prev.y >= b.maxY];
+      let k = -1;
+      for (let i = 0; i < 5; i++) if (came[i] && (k < 0 || pen[i] < pen[k])) k = i;
+      if (k < 0) k = pen.indexOf(Math.min(...pen));
       nx = k === 0 ? -1 : k === 1 ? 1 : 0; nz = k === 2 ? -1 : k === 3 ? 1 : 0; ny = k === 4 ? 1 : 0;
       if (k === 0) p.pos.x = b.minX - R; else if (k === 1) p.pos.x = b.maxX + R;
       else if (k === 2) p.pos.z = b.minZ - R; else if (k === 3) p.pos.z = b.maxZ + R; else p.pos.y = b.maxY + R;
@@ -819,135 +1125,184 @@ function collide() {
     const vn = p.vel.x * nx + p.vel.y * ny + p.vel.z * nz;
     if (vn < 0) { p.vel.x -= nx * vn; p.vel.y -= ny * vn; p.vel.z -= nz * vn; }
     if (ny > 0.6) p.onGround = true;
-    else if (Math.abs(ny) < 0.3) p.wallN = new V3(nx, 0, nz).normalize();
+    else if (Math.abs(ny) < 0.3) {
+      p.wallN = wallNormal.set(nx, 0, nz).normalize(); p.wallBox = b;
+      if (vn < 0) p.wallHit = Math.max(p.wallHit, -vn);
+    }
   }
-  const lim = HALF + 60;
-  p.pos.x = clamp(p.pos.x, -lim, lim); p.pos.z = clamp(p.pos.z, -lim, lim);
+  // city edge: a soft bounce back in, so you're never pinned against it with speed you can't use
+  const lim = HALF - R;
+  if (Math.abs(p.pos.x) > lim) { p.pos.x = Math.sign(p.pos.x) * lim; if (p.vel.x * p.pos.x > 0) p.vel.x *= -0.3; }
+  if (Math.abs(p.pos.z) > lim) { p.pos.z = Math.sign(p.pos.z) * lim; if (p.vel.z * p.pos.z > 0) p.vel.z *= -0.3; }
 }
 
-function step(dt, first) {
-  const jump = first && input.jumpPress, zip = first && input.zipPress;
+function startWallRun(carried) {
+  p.wallRun = { n: p.wallN.clone(), box: p.wallBox, lost: 0, climb: clamp(carried * 0.7, 18, 40) };
+  if (p.wallHit > 5) p.vel.y = Math.max(p.vel.y, 0) + Math.min(40, 0.7 * p.wallHit);   // a slam into the wall turns into climb
+  p.airZips = 2;
+  if (carried > 3) showToast('WALL RUN');
+}
+function wallJump() {
+  const n = p.wallRun.n;
+  // only the along-the-wall part of the view, so looking at the wall doesn't cancel the push-off
+  tmp.copy(camF).addScaledVector(n, -camF.dot(n));
+  p.vel.copy(tmp).multiplyScalar(6).addScaledVector(n, 16); p.vel.y = 13;
+  p.jumpN.copy(n); p.wallRun = null; p.wallCool = 0.6; jumpBuf = 0;
+}
+function kickOff(swingNow) {
+  const n = p.wallRun.n;
+  p.vel.addScaledVector(n, 9); p.vel.y = Math.max(p.vel.y, 8);
+  p.jumpN.copy(n); p.wallRun = null; p.wallCool = 0.35;
+  if (swingNow) p.reattach = 0;
+}
+
+// the travel line turns toward the stick while swinging
+function steerTravel(travel, dt) {
+  if (moveDir.lengthSq() < 0.01) return;
+  const a = Math.atan2(travel.x, travel.z);
+  const b = a + angleDiff(a, Math.atan2(moveDir.x, moveDir.z)) * (1 - Math.exp(-2.5 * dt));
+  travel.set(Math.sin(b), 0, Math.cos(b));
+}
+function webMove(dt) {
+  steerTravel(p.travel, dt);
+  ropeStep(p.pos, p.vel, p.web, p.travel, dt);
+}
+// Wall run: W (into the wall) or a held swing climbs, A/D run along it, no input clings, S or a fresh swing press kicks off.
+function wallMove(dt, tap) {
+  const wr = p.wallRun, n = wr.n;
+  if (jumpBuf > 0) wallJump();
+  else if (tap || moveDir.dot(n) > 0.3) kickOff(tap);
+  else {
+    const t = tmp.set(-n.z, 0, n.x);
+    const side = moveDir.dot(t), climbing = input.swing || -moveDir.dot(n) > 0.3;
+    let vt = p.vel.dot(t), vu = p.vel.y;
+    wr.climb = Math.max(18, wr.climb - 20 * dt);
+    const goalT = Math.abs(side) > 0.2 ? side * 16 : input.swing ? vt * (1 - 0.6 * dt) : 0;
+    vt += clamp(goalT - vt, -30 * dt, 30 * dt);
+    vu += clamp((climbing ? wr.climb : 0) - vu, -60 * dt, 120 * dt);   // a fall is caught quickly, the climb builds up
+    p.vel.copy(t).multiplyScalar(vt).addScaledVector(n, -3);
+    p.vel.y = vu;
+  }
+  p.pos.addScaledVector(p.vel, dt);
+}
+function groundMove(dt) {
+  const hsp = Math.hypot(p.vel.x, p.vel.z), run = moveDir.lengthSq() > 0.01;
+  p.runTime = run ? p.runTime + dt : 0;
+  if (run && hsp > 20) p.runTime = Math.max(p.runTime, 1.5);   // landing fast with a direction held rolls into a full run
+  const top = 12 + Math.min(p.runTime, 1.5) * 7;
+  // braking grows with the excess speed, so a landing sticks instead of skating off the roof
+  const a = ((run ? 60 : 40) + Math.max(0, hsp - top) * 5) * dt;
+  const dx = moveDir.x * top - p.vel.x, dz = moveDir.z * top - p.vel.z, dl = Math.hypot(dx, dz);
+  const k = dl > a ? a / dl : 1;
+  p.vel.x += dx * k; p.vel.z += dz * k;
+  if (jumpBuf > 0) {
+    if (simTime - p.perchAt < 0.25) pointLaunch(p.perchSpeed, simTime - p.perchAt < 0.08);
+    else { p.vel.y = 15 + Math.min(hsp, 20) * 0.2; jumpBuf = 0; }
+  }
+  p.vel.y -= G * dt;
+  p.pos.addScaledVector(p.vel, dt);
+  p.airZips = 2;
+}
+function airMove(dt) {
+  if (jumpBuf > 0) {
+    if (simTime - p.releaseAt < WEB_GRACE) swingJump(p.releaseTheta);
+    else if (p.airZips > 0 && !landingSoon()) airZip();
+  }
+  const steer = tmp2.copy(moveDir);
+  const into = steer.dot(p.jumpN);
+  if (into < 0) steer.addScaledVector(p.jumpN, -into);   // just left a wall: don't steer straight back onto it
+  const vy = p.vel.y;
+  const gMul = input.dive ? 2.2 : Math.abs(vy) < 5 ? 0.6 : vy < 0 ? 1.2 : 1;   // float at the apex, drop faster after it
+  p.vel.y -= G * dt * gMul;
+  p.vel.addScaledVector(steer, 18 * dt * steerRoom(p.vel, steer, 14));
+  if (input.dive) p.vel.addScaledVector(camF, 10 * dt);
+  p.vel.y = Math.max(p.vel.y, -110);
+  p.vel.x *= 1 - 0.08 * dt; p.vel.z *= 1 - 0.08 * dt;
+  p.pos.addScaledVector(p.vel, dt);
+}
+
+// one fixed physics step
+function step(dt) {
+  simTime += dt;
   p.reattach -= dt; p.wallCool -= dt;
-  const hsp = Math.hypot(p.vel.x, p.vel.z);
+  if (p.wallCool <= 0) p.jumpN.set(0, 0, 0);
+  jumpBuf = Math.max(0, jumpBuf - dt); zipBuf = Math.max(0, zipBuf - dt);
+  const tap = swingTap;
+  swingTap = false;
 
-  if (zip && zipTarget) startZip();
+  if (zipBuf > 0 && zipTarget && !p.zip) startZip();
+  if (p.zip) { zipMove(dt); return; }
 
-  if (p.zip) {
-    p.zip.t += dt;
-    tmp.subVectors(p.zip.target, p.pos);
-    const d = tmp.length();
-    p.vel.copy(tmp).multiplyScalar(Math.min(70, d * 8) / Math.max(d, 0.001));
-    p.pos.addScaledVector(p.vel, dt);
-    collide();
-    if (d < 1.5 || p.zip.t > 3 || (p.wallN && d < 4)) {
-      if (p.zip.launch) {
-        p.vel.copy(camF).multiplyScalar(14); p.vel.y = 22;
-        showToast('POINT LAUNCH');
-      } else p.vel.multiplyScalar(0.15);
-      p.zip = null; p.reattach = 0.25;
+  if (input.swing && !p.web && !p.wallRun && p.reattach <= 0) {
+    if (p.onGround) {
+      // leap up and forward into the swing
+      tmp.set(moveDir.x, 0, moveDir.z);
+      if (tmp.lengthSq() < 0.01) tmp.set(camF.x, 0, camF.z);
+      p.vel.addScaledVector(tmp.normalize(), 6); p.vel.y = 14;
+      p.onGround = false; p.reattach = 0.12;
     }
-    return;
+    else attach();
   }
+  if (!input.swing && p.web) release();
+  // a jump pressed during this web, or just after the last one let go
+  if (p.web && jumpBuf > 0 && (jumpAt >= p.web.t0 || simTime - p.releaseAt < WEB_GRACE))
+    swingJump(p.web.age < 0.2 && simTime - p.releaseAt < WEB_GRACE ? p.releaseTheta : swingTheta(p.web));
 
-  // start or keep swinging
-  if (input.swing && !p.web && p.reattach <= 0) {
-    if (p.onGround) { p.vel.y = 15; p.onGround = false; p.reattach = 0.12; }
-    else if (!p.wallRun) attach();
-  }
-  if (!input.swing && p.web) release(true);
+  if (p.web) webMove(dt);
+  else if (p.wallRun) wallMove(dt, tap);
+  else if (p.onGround) groundMove(dt);
+  else airMove(dt);
+
+  // soft speed cap: excess speed bleeds off over about a second instead of being cut in one frame
+  const s = p.vel.length();
+  if (s > MAX_SPEED) p.vel.multiplyScalar(Math.max(MAX_SPEED / s, 1 - (input.dive ? 0.15 : 0.6) * dt));
+
+  const before = p.vel.length();
+  collide();
 
   if (p.web) {
     const w = p.web;
-    w.age += dt;
-    if (jump) {
-      // swing jump: the signature release boost
-      const h = tmp.set(p.vel.x, 0, p.vel.z);
-      if (h.lengthSq() > 1) h.normalize(); else h.copy(camF);
-      p.web = null;
-      p.vel.y = Math.max(p.vel.y, 0) + 17;
-      p.vel.addScaledVector(h, 7);
-      p.reattach = 0.45;
-      thwip(0.6);
-      showToast('SWING JUMP');
-    } else {
-      p.vel.y -= G * dt;
-      p.vel.addScaledVector(moveDir, 16 * dt);
-      // momentum assist on the downswing only, horizontal, so chains stay level instead of climbing
-      const hs2 = Math.hypot(p.vel.x, p.vel.z);
-      if (p.vel.y < 0 && hs2 > 2 && hs2 < 50) { p.vel.x += p.vel.x / hs2 * 14 * dt; p.vel.z += p.vel.z / hs2 * 14 * dt; }
-      w.len = Math.max(6, w.len - 3 * dt);
-      p.pos.addScaledVector(p.vel, dt);
-      tmp.subVectors(p.pos, w.anchor);
-      const dist = tmp.length();
-      if (dist > w.len) {
-        tmp.multiplyScalar(1 / dist);
-        p.pos.copy(w.anchor).addScaledVector(tmp, w.len);
-        const vr = p.vel.dot(tmp);
-        if (vr > 0) p.vel.addScaledVector(tmp, -vr);
-      }
-      // past the forward apex: let go and chain into the next web
-      const h = tmp2.set(p.vel.x, 0, p.vel.z);
-      if (h.lengthSq() > 4) {
-        h.normalize();
-        const ahead = (p.pos.x - w.anchor.x) * h.x + (p.pos.z - w.anchor.z) * h.z;
-        if ((ahead > w.len * 0.38 && p.vel.y > -1 && w.age > 0.35) || p.pos.y > w.anchor.y - 1.5) {
-          release(false); p.reattach = 0.12;
-        }
-      }
+    if (p.wallN) {
+      if (p.wallHit > 5 || (Math.hypot(p.vel.x, p.vel.z) < 4 && w.age > 0.3)) {
+        // the go button: slamming into a facade mid-swing runs up it with the speed you had, instead of stopping dead
+        release();
+        if (p.wallCool <= 0) startWallRun(before);
+        else { p.vel.addScaledVector(p.wallN, 6); p.reattach = 0.2; }
+      } else p.vel.addScaledVector(p.wallN, 20 * dt);   // grazing a facade: ease away from it
+    } else if (p.onGround && w.age > 0.15) release();
+    else if (swingDone(p.pos, p.vel, w)) { release(); p.reattach = 0.12; }
+    else if (++w.tick % 4 === 0) {
+      // the rope wrapped round a corner: re-aim rather than draw it through a building
+      handPt.copy(p.pos); handPt.y += 0.6;
+      if (segmentBlocked(handPt, w.anchor, 0.4)) { release(); p.reattach = 0; }
     }
   } else if (p.wallRun) {
-    const n = p.wallRun.n;
-    const t = new V3(-n.z, 0, n.x);
-    p.vel.copy(t).multiplyScalar(moveDir.dot(t) * 12);
-    p.vel.y = 17;
-    p.vel.addScaledVector(n, -4);
-    if (jump) {
-      p.vel.copy(n).multiplyScalar(16).addScaledVector(camF, 6); p.vel.y = 13;
-      p.wallRun = null; p.wallCool = 0.35;
-    }
-    p.pos.addScaledVector(p.vel, dt);
-  } else if (p.onGround) {
-    const run = moveDir.lengthSq() > 0.01;
-    p.runTime = run ? p.runTime + dt : 0;
-    const top = 12 + Math.min(p.runTime, 1.5) * 7;
-    const a = (run ? 60 : 40) * dt;
-    p.vel.x += clamp(moveDir.x * top - p.vel.x, -a, a);
-    p.vel.z += clamp(moveDir.z * top - p.vel.z, -a, a);
-    if (jump) p.vel.y = 15 + Math.min(hsp, 20) * 0.2;
-    p.vel.y -= G * dt;
-    p.pos.addScaledVector(p.vel, dt);
-  } else {
-    p.vel.y -= G * dt * (input.dive ? 2.2 : 1);
-    p.vel.addScaledVector(moveDir, 18 * dt);
-    if (input.dive) p.vel.addScaledVector(camF, 10 * dt);
-    p.vel.y = Math.max(p.vel.y, -110);
-    p.vel.x *= 1 - 0.08 * dt; p.vel.z *= 1 - 0.08 * dt;
-    p.pos.addScaledVector(p.vel, dt);
-  }
-
-  const s = p.vel.length();
-  if (s > MAX_SPEED && !input.dive) p.vel.multiplyScalar(MAX_SPEED / s);
-
-  const wasRunning = !!p.wallRun;
-  collide();
-
-  const intoWall = p.wallN && moveDir.dot(p.wallN) < -0.5;
-  if (p.wallN && p.wallCool <= 0 && !input.swing && (!p.onGround || intoWall)) {
-    if (p.web) { p.web = null; p.reattach = 0.4; }
-    if (!p.wallRun) { p.wallRun = { n: p.wallN.clone(), lost: 0 }; if (!wasRunning) showToast('WALL RUN'); }
-    else { p.wallRun.n.copy(p.wallN); p.wallRun.lost = 0; }
-  } else if (p.wallRun) {
-    p.wallRun.lost += dt;
-    if (p.onGround && !intoWall) p.wallRun = null;
-    else if (p.wallRun.lost > 0.06) {
-      // ran off the top edge: vault onto the roof
-      p.vel.y = 9; p.vel.addScaledVector(p.wallRun.n, -7);
+    const wr = p.wallRun;
+    if (p.wallN) { wr.n.copy(p.wallN); wr.box = p.wallBox; wr.lost = 0; }
+    else if ((wr.lost += dt) > 0.06) {
+      // contact lost: over the top edge vaults onto the roof, round a corner just carries on
+      if (p.pos.y > wr.box.maxY - 1.5) { p.vel.y = Math.max(p.vel.y, 9); p.vel.addScaledVector(wr.n, -7); }
       p.wallRun = null; p.wallCool = 0.3;
     }
+    if (p.wallRun && p.onGround && moveDir.dot(wr.n) > -0.5) p.wallRun = null;
+  } else if (p.wallN && p.wallCool <= 0 && (moveDir.dot(p.wallN) < -0.5 || (!p.onGround && input.swing && p.wallHit > 6))) {
+    // steering into a wall (or hitting one with swing held) runs on it; brushing past keeps your speed
+    startWallRun(before);
   }
-  if (p.wallRun && moveDir.lengthSq() < 0.01 && p.wallRun.lost === 0) {
-    // no input: push off the wall
-    p.vel.addScaledVector(p.wallRun.n, 6); p.wallRun = null; p.wallCool = 0.5;
+}
+
+function collectTokens(a, b) {
+  // swept test along this step's motion, so fast passes can't skip over a token
+  const sx = b.x - a.x, sy = b.y - a.y, sz = b.z - a.z, L2 = sx * sx + sy * sy + sz * sz;
+  for (const t of tokens) {
+    if (t.taken) continue;
+    const ox = t.pos.x - a.x, oy = t.pos.y - a.y, oz = t.pos.z - a.z;
+    const u = L2 > 1e-9 ? clamp((ox * sx + oy * sy + oz * sz) / L2, 0, 1) : 0;
+    const dx = ox - sx * u, dy = oy - sy * u, dz = oz - sz * u;
+    if (dx * dx + dy * dy + dz * dz > 9) continue;
+    t.taken = true; t.mesh.visible = false; tokensTaken++;
+    chime();
+    showToast(tokensTaken === tokens.length ? 'EVERY TOKEN FOUND' : `TOKEN ${tokensTaken} / ${tokens.length}`);
   }
 }
 
@@ -956,8 +1311,9 @@ let toastTimer = 0;
 function showToast(t) { const el = $('toast'); el.textContent = t; el.style.opacity = 1; toastTimer = 1.1; }
 const tips = isTouch ? [] : [
   'Hold <kbd>Left click</kbd> to swing. Keep holding and webs chain automatically.',
-  'Tap <kbd>Space</kbd> mid-swing for a swing jump: more height and speed.',
-  'Aim at a ledge and press <kbd>E</kbd> or <kbd>Right click</kbd> to zip and point-launch.',
+  'Tap <kbd>Space</kbd> just past the low point of a swing for a swing jump. Time it well for a perfect boost.',
+  'Aim at a ledge and press <kbd>E</kbd> or <kbd>Right click</kbd> to zip there. Tap <kbd>Space</kbd> as you arrive to point-launch.',
+  'Nothing to swing from? Tap <kbd>Space</kbd> in the air to web-zip forward.',
   'Hold <kbd>W</kbd> into a wall to wall-run straight up.',
   'Hold <kbd>C</kbd> while falling to dive, then swing to turn that speed into momentum.'
 ];
@@ -1064,12 +1420,13 @@ function animateHero(dt) {
     setJ(legL, -0.6, 0.1, 1.1, k); setJ(legR, 0.3, -0.1, 0.4, k);
   }
   orientHero(up, fwd, 1 - Math.exp(-dt * 10));
-  hero.position.copy(p.pos);
+  hero.position.copy(drawPos);
   hero.updateMatrixWorld(true);
 
   joints.armR.end.getWorldPosition(handR); joints.armL.end.getWorldPosition(handL);
   if (p.web) { placeWeb(webs[0], handR, p.web.anchor); webs[1].visible = false; }
   else if (p.zip) { placeWeb(webs[0], handR, p.zip.target); placeWeb(webs[1], handL, p.zip.target); }
+  else if (p.zipFx > 0) { p.zipFx -= dt; placeWeb(webs[0], handR, p.zipFxPoint); placeWeb(webs[1], handL, p.zipFxPoint); }
   else { webs[0].visible = webs[1].visible = false; }
 }
 
@@ -1101,7 +1458,7 @@ function updateCamera(dt) {
   const speed = p.vel.length();
   const wantDist = state === 'title' ? 9 : 6 + Math.min(speed, 70) * 0.05;
   cam.dist = lerp(cam.dist, wantDist, 1 - Math.exp(-dt * 3));
-  tmp.copy(p.pos); tmp.y += 1.3;
+  tmp.copy(drawPos); tmp.y += 1.3;
   cam.target.lerp(tmp, 1 - Math.exp(-dt * 20));
   shoulder.copy(camR).multiplyScalar(-0.9);   // over-the-shoulder offset
   let d = cam.dist;
@@ -1140,16 +1497,22 @@ function simulate(dt, pad) {
     if (moveDir.lengthSq() > 1) moveDir.normalize();
     input.swing = mouseSwing || touchSwing || padSwing || keys.has('ShiftLeft') || keys.has('ShiftRight');
     input.dive = touchDive || padDive || keys.has('KeyC') || keys.has('ControlLeft');
+    // presses are latched until a physics step uses them, since a fast frame can run no step at all
+    if (input.swing && !swingWas) swingTap = true;
+    swingWas = input.swing;
+    if (input.jumpPress) { jumpBuf = JUMP_BUFFER; jumpAt = simTime; }
+    if (input.zipPress) zipBuf = JUMP_BUFFER;
 
     updateZipTarget();
-    for (let i = 0; i < 4; i++) step(dt / 4, i === 0);
-
-    for (const t of tokens) {
-      if (t.taken || t.pos.distanceToSquared(p.pos) > 9) continue;
-      t.taken = true; t.mesh.visible = false; tokensTaken++;
-      chime();
-      showToast(tokensTaken === tokens.length ? 'EVERY TOKEN FOUND' : `TOKEN ${tokensTaken} / ${tokens.length}`);
+    simAcc += dt;
+    for (let n = 0; simAcc >= STEP - 1e-9 && n < MAX_STEPS; n++) {
+      p.prev.copy(p.pos);
+      step(STEP);
+      collectTokens(p.prev, p.pos);
+      simAcc -= STEP;
     }
+    simAcc = Math.min(simAcc, STEP);   // time beyond MAX_STEPS is dropped (below 10 fps the game slows down)
+    drawPos.lerpVectors(p.prev, p.pos, clamp(simAcc / STEP, 0, 1));
     topSpeed = Math.max(topSpeed, p.vel.length());
 
     hudTimer -= dt;
@@ -1183,7 +1546,7 @@ function simulate(dt, pad) {
   } else zipMarker.visible = false;
 }
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const dt = Math.min(MAX_STEPS * STEP, (now - last) / 1000);
   last = now;
   simulate(dt, pollPad());
   renderer.render(scene, camera);
@@ -1195,16 +1558,27 @@ animateHero(0.016);
 requestAnimationFrame(frame);
 $('start-btn').focus();
 
-// read-only hook used by automated play tests
+// hook used by automated play tests
+//   p: player state; state: 'title' | 'play' | 'paused'
+//   run(seconds, held, frameDt = 1/60): plays exactly `seconds` of game time as frames of frameDt with those inputs held
+//     (held keys: KeyW KeyA KeyS KeyD KeyC ShiftLeft, swing = left mouse). Physics steps at PHYS_HZ underneath,
+//     so the frame rate doesn't change the simulation.
+//   press('jump' | 'zip'): a press read by the next frame
+//   added for movement tests: boxes (collision AABBs), cam (yaw, pitch, target), tokens ({ pos, taken }), PHYS_HZ,
+//     teleport([x,y,z], [vx,vy,vz], yaw, pitch): place the hero and clear movement state,
+//     findAnchor(): the anchor the next web would use from here, or null (changes no game state)
 window.__webSlinger = {
-  p, get state() { return state; },
-  run(seconds, held = {}) {
+  p, get state() { return state; }, boxes, cam, tokens, PHYS_HZ,
+  run(seconds, held = {}, frameDt = 1 / 60) {
     keys.clear(); Object.keys(held).forEach(k => held[k] && keys.add(k));
     mouseSwing = !!held.swing;
-    for (let t = 0; t < seconds; t += 1 / 60) simulate(1 / 60, null);
+    const n = seconds > 0 ? Math.max(1, Math.round(seconds / frameDt)) : 0;
+    for (let i = 0; i < n; i++) simulate(frameDt, null);
     mouseSwing = false; keys.clear();
   },
-  press(kind) { if (kind === 'jump') input.jumpPress = true; else input.zipPress = true; }
+  press(kind) { if (kind === 'jump') input.jumpPress = true; else input.zipPress = true; },
+  teleport(pos, vel = [0, 0, 0], yaw = cam.yaw, pitch = 0.12) { teleport(new V3(...pos), new V3(...vel), yaw, pitch); },
+  findAnchor() { const a = findAnchor(); return a && { anchor: a.anchor.toArray(), pivot: a.pivot.toArray(), len: a.len }; }
 };
 })();
 </script>
