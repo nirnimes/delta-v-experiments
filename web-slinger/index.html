@@ -37,16 +37,27 @@ body { background: var(--ink); color: var(--paper); font-family: var(--font-ui);
 #crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(244, 239, 230, .75); box-shadow: 0 0 0 2px rgba(10,14,28,.4); }
 #crosshair.zip { width: 14px; height: 14px; margin: -9px 0 0 -9px; background: transparent; border: 2px solid rgba(244, 239, 230, .9); }
 #tip {
-  position: absolute; left: 24px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); max-width: min(420px, calc(100% - 200px));
+  position: absolute; left: 24px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); max-width: min(460px, calc(100% - 290px)); box-sizing: border-box;
   background: var(--glass); border-left: 4px solid var(--red); padding: 8px 14px; font-size: 17px; line-height: 1.3;
   transition: opacity .6s;
 }
+/* narrow windows: the tip goes above the speed readout instead of beside it */
+@media (max-width: 640px) { #tip { bottom: calc(110px + env(safe-area-inset-bottom, 0px)); max-width: calc(100% - 48px); } }
 #tip kbd, .panel kbd { font-family: var(--font-ui); font-weight: 700; background: var(--paper); color: var(--ink); padding: 0 6px; border-radius: 3px; }
 #toast { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); font-family: var(--font-display); font-size: clamp(26px, 4vw, 40px); letter-spacing: 2px; color: var(--gold); text-shadow: 0 2px 14px rgba(0,0,0,.5); opacity: 0; transition: opacity .3s; white-space: nowrap; }
+/* desktop without a captured mouse: what a click will do */
+#mouse-hint { position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); font-size: 15px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--paper); background: var(--glass); padding: 3px 10px; white-space: nowrap; }
+/* nearest-token marker: sits over the token, or on the screen edge with its arrow pointing the way */
+#marker { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
+#marker .gem { position: absolute; left: -9px; top: -9px; width: 14px; height: 14px; border: 2px solid var(--gold); background: rgba(255,195,90,.25); transform: rotate(45deg); box-shadow: 0 0 10px rgba(255,170,60,.7); }
+#marker .arrow { position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; display: none; }
+#marker .arrow::before { content: ''; position: absolute; left: 11px; top: 2px; border: 7px solid transparent; border-left: 11px solid var(--gold); filter: drop-shadow(0 0 4px rgba(0,0,0,.6)); }
+#marker.edge .arrow { display: block; }
+#marker span { position: absolute; left: 0; top: 13px; transform: translateX(-50%); font-size: 15px; font-weight: 700; letter-spacing: .06em; color: var(--gold); text-shadow: 0 1px 4px rgba(0,0,0,.8); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
-.overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: linear-gradient(180deg, rgba(10,14,28,.15), rgba(10,14,28,.65)); overflow-y: auto; }
+.overlay { position: fixed; inset: 0; display: grid; padding: 16px; background: linear-gradient(180deg, rgba(10,14,28,.15), rgba(10,14,28,.65)); overflow-y: auto; }
 .panel {
-  width: min(560px, 100%); box-sizing: border-box; background: var(--glass); backdrop-filter: blur(8px);
+  width: min(560px, 100%); box-sizing: border-box; background: var(--glass); backdrop-filter: blur(8px); margin: auto;   /* auto margins centre it and still let a tall panel scroll from its top */
   border-top: 5px solid var(--red); padding: 26px 28px 28px; display: grid; gap: 16px;
   box-shadow: 0 24px 60px rgba(0,0,0,.45);
 }
@@ -68,17 +79,42 @@ button.primary {
 button.primary:hover { filter: brightness(1.12); }
 button.primary:active { transform: translateY(2px); }
 button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+button.secondary { font-family: var(--font-ui); font-size: 17px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; background: transparent; color: var(--paper); border: 2px solid rgba(244,239,230,.4); padding: 8px 16px; cursor: pointer; }
+button.secondary:hover { border-color: var(--paper); }
+button:disabled { opacity: .6; cursor: default; }
 #load-error { color: var(--gold); font-weight: 700; }
+/* the title and pause panels show keyboard or touch wording to match the device */
+body.touch .kb, body:not(.touch) .tc { display: none; }
 
 #touch { position: fixed; inset: 0; pointer-events: none; }
-#stick { position: absolute; left: 28px; bottom: calc(28px + env(safe-area-inset-bottom, 0px)); width: 130px; height: 130px; border-radius: 50%; background: rgba(244,239,230,.12); border: 2px solid rgba(244,239,230,.3); pointer-events: auto; touch-action: none; }
+/* floating stick: shown at its home spot as a hint; a thumb anywhere on the left side centres it under the thumb */
+#stick { position: absolute; left: 28px; bottom: calc(28px + env(safe-area-inset-bottom, 0px)); width: 130px; height: 130px; border-radius: 50%; background: rgba(244,239,230,.12); border: 2px solid rgba(244,239,230,.3); pointer-events: auto; touch-action: none; opacity: .6; }
+#stick.on { opacity: 1; }
 #knob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%; background: rgba(244,239,230,.55); }
-.tbtns { position: absolute; right: 20px; bottom: calc(110px + env(safe-area-inset-bottom, 0px)); display: grid; grid-template-columns: repeat(2, 72px); gap: 12px; pointer-events: auto; }
-.tbtns button { width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(244,239,230,.45); background: rgba(10,14,28,.55); color: var(--paper); font-family: var(--font-ui); font-weight: 700; font-size: 15px; letter-spacing: .06em; text-transform: uppercase; touch-action: none; }
+.tbtns { position: absolute; right: calc(20px + env(safe-area-inset-right, 0px)); bottom: calc(28px + env(safe-area-inset-bottom, 0px)); display: grid; grid-template-columns: repeat(2, 72px); gap: 12px; pointer-events: auto; touch-action: none; }
+.tbtns button { width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(244,239,230,.45); background: rgba(10,14,28,.55); color: var(--paper); font-family: var(--font-ui); font-weight: 700; font-size: 15px; letter-spacing: .06em; text-transform: uppercase; touch-action: none; -webkit-tap-highlight-color: transparent; }
 .tbtns button[data-b="swing"] { background: rgba(226,35,47,.8); border-color: var(--red); }
 .tbtns button.on { transform: scale(.92); filter: brightness(1.3); }
-body.touch #tip { display: none; }
-body.touch .readout { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0px)); }
+/* very narrow phones: the buttons sit above the stick's corner */
+@media (max-width: 340px) { .tbtns { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); } }
+.tmenu { position: absolute; left: calc(12px + env(safe-area-inset-left, 0px)); top: calc(12px + env(safe-area-inset-top, 0px)); display: flex; gap: 8px; pointer-events: auto; }
+.tmenu button { width: 44px; height: 44px; border-radius: 50%; border: 2px solid rgba(244,239,230,.4); background: rgba(10,14,28,.55); color: var(--paper); font-family: var(--font-ui); font-weight: 700; font-size: 15px; padding: 0; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.tmenu button svg { width: 20px; height: 20px; display: block; margin: auto; fill: currentColor; }
+.tmenu button[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+.tmenu .x, .tmenu [aria-pressed="true"] .wave { display: none; }
+.tmenu [aria-pressed="true"] .x { display: inline; }
+body.touch #tip { left: calc(12px + env(safe-area-inset-left, 0px)); top: calc(104px + env(safe-area-inset-top, 0px)); bottom: auto; max-width: min(380px, calc(100% - 24px)); font-size: 15px; }
+body.touch .readout { bottom: auto; right: calc(16px + env(safe-area-inset-right, 0px)); top: calc(12px + env(safe-area-inset-top, 0px)); }
+body.touch .speed { font-size: 40px; }
+body.touch .meta { font-size: 15px; }
+/* short landscape phones: a compact title panel */
+@media (max-height: 520px) {
+  .panel { padding: 16px 20px 18px; gap: 10px; }
+  .panel h1 { font-size: 46px; }
+  .panel h2 { font-size: 40px; }
+  .controls { font-size: 14px; gap: 4px 12px; }
+  .note { font-size: 14px; }
+}
 @media (prefers-reduced-motion: reduce) { #tip, #toast, button.primary { transition: none; } }
 </style>
 </head>
@@ -86,6 +122,8 @@ body.touch .readout { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0p
 <div id="vignette"></div>
 <div id="hud" hidden>
   <div id="crosshair"></div>
+  <div id="marker" hidden><div class="arrow"></div><div class="gem"></div><span id="marker-dist"></span></div>
+  <div id="mouse-hint" hidden></div>
   <div id="toast"></div>
   <div id="tip"></div>
   <div class="readout">
@@ -101,6 +139,10 @@ body.touch .readout { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0p
     <button type="button" data-b="jump">Jump</button>
     <button type="button" data-b="swing">Swing</button>
   </div>
+  <div class="tmenu">
+    <button type="button" id="t-pause" aria-label="Pause"><svg viewBox="0 0 20 20"><rect x="4" y="3" width="4" height="14"/><rect x="12" y="3" width="4" height="14"/></svg></button>
+    <button type="button" id="t-mute" aria-label="Mute" aria-pressed="false"><svg viewBox="0 0 20 20"><path d="M2 7h4l5-4v14l-5-4H2z"/><path class="wave" d="M13.5 6.5a5 5 0 0 1 0 7l-1-1a3.6 3.6 0 0 0 0-5z"/><path class="x" d="M12.6 7.4l1-1 2.1 2.1 2.1-2.1 1 1-2.1 2.1 2.1 2.1-1 1-2.1-2.1-2.1 2.1-1-1 2.1-2.1z"/></svg></button>
+  </div>
 </div>
 
 <div class="overlay" id="title-screen">
@@ -108,14 +150,15 @@ body.touch .readout { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0p
     <span class="eyebrow">Golden hour · Midtown</span>
     <h1>Web <span>Slinger</span></h1>
     <dl class="controls">
-      <dt>Swing</dt><dd>Hold <kbd>Left click</kbd> or <kbd>Shift</kbd>. Webs find buildings for you. Keep holding to chain swings.</dd>
-      <dt>Jump</dt><dd><kbd>Space</kbd>. Tap it just past the low point of a swing for a big boost. In the air it web-zips you forward.</dd>
-      <dt>Move</dt><dd><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> steer · mouse looks · steer into a wall to run up it</dd>
-      <dt>Zip</dt><dd><kbd>Right click</kbd> or <kbd>E</kbd> pulls you to the marked spot. At a ledge, tap <kbd>Space</kbd> as you arrive to launch.</dd>
-      <dt>Dive</dt><dd>Hold <kbd>C</kbd> to dive and build speed for the next swing.</dd>
-      <dt>Gamepad</dt><dd>R2 swing · A / ✕ jump · L2 zip · B / ◯ dive</dd>
+      <dt>Swing</dt><dd><span class="kb">Hold <kbd>Left click</kbd> or <kbd>Shift</kbd>.</span><span class="tc">Hold <kbd>Swing</kbd>.</span> Webs find buildings for you. Keep holding to chain swings.</dd>
+      <dt>Jump</dt><dd><span class="kb"><kbd>Space</kbd>.</span><span class="tc"><kbd>Jump</kbd>.</span> Tap it just past the low point of a swing for a big boost<span class="tc">, or slide your thumb from Swing onto Jump</span>. In the air it web-zips you forward.</dd>
+      <dt>Move</dt><dd><span class="kb"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> steer · mouse looks</span><span class="tc">Left thumb steers (anywhere on the left half) · drag the right side to look</span> · steer into a wall to run up it</dd>
+      <dt>Zip</dt><dd><span class="kb"><kbd>Right click</kbd> or <kbd>E</kbd></span><span class="tc"><kbd>Zip</kbd></span> pulls you to the spot under the centre dot. At a ledge, tap Jump as you arrive to launch.</dd>
+      <dt>Dive</dt><dd>Hold <span class="kb"><kbd>C</kbd></span><span class="tc"><kbd>Dive</kbd></span> while falling to build speed for the next swing.</dd>
+      <dt class="kb">Gamepad</dt><dd class="kb">R2 swing · A / ✕ jump · L2 zip · B / ◯ dive · Start pauses</dd>
+      <dt class="kb">Menu</dt><dd class="kb"><kbd>P</kbd> or <kbd>Esc</kbd> pauses · <kbd>M</kbd> mutes</dd>
     </dl>
-    <p class="note">Collect the gold tokens scattered over rooftops and intersections. There's no way to die, so experiment.</p>
+    <p class="note">Collect the gold tokens over rooftops and intersections: the gold marker always points to the nearest one. There's no way to die, so experiment.</p>
     <p id="load-error" hidden>The 3D engine didn't load. Check your connection and reload the page.</p>
     <div class="actions"><button class="primary" id="start-btn" type="button">Start swinging</button></div>
   </div>
@@ -126,7 +169,11 @@ body.touch .readout { bottom: auto; top: calc(16px + env(safe-area-inset-top, 0p
     <span class="eyebrow">Paused</span>
     <h2>Take a breather</h2>
     <p class="note" id="pause-stats"></p>
-    <div class="actions"><button class="primary" id="resume-btn" type="button">Resume</button></div>
+    <div class="actions">
+      <button class="primary" id="resume-btn" type="button">Resume</button>
+      <button class="secondary" id="mute-btn" type="button">Sound on</button>
+    </div>
+    <p class="note kb"><kbd>P</kbd> or <kbd>Enter</kbd> resumes · <kbd>M</kbd> mutes</p>
   </div>
 </div>
 
@@ -141,14 +188,22 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 
 // ---------------------------------------------------------------- renderer
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+const isTouch = matchMedia('(pointer: coarse)').matches;
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+} catch (err) {
+  $('load-error').textContent = "Your browser couldn't start WebGL, so the city can't be drawn. Turn on hardware acceleration in your browser's settings (or try another browser), then reload.";
+  $('load-error').hidden = false; $('start-btn').disabled = true;
+  return;
+}
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// phones get the cheaper filter (the type is fixed from the first frame: changing it would recompile every material)
+renderer.shadowMap.type = isTouch ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 renderer.domElement.id = 'view';
 document.body.prepend(renderer.domElement);
 
@@ -210,7 +265,8 @@ const hemi = new THREE.HemisphereLight('#bcc9ff', '#7a5a48', 0.35);
 const sun = new THREE.DirectionalLight('#ffc591', 2.3);
 sun.castShadow = true;
 // a 4096 map where the GPU allows it (not on phones), so one map can cover a wide area sharply
-const SHADOW_MAP = !matchMedia('(pointer: coarse)').matches && renderer.capabilities.maxTextureSize >= 8192 ? 4096 : 2048;
+const SHADOW_MAP = !isTouch && renderer.capabilities.maxTextureSize >= 8192 ? 4096 : 2048;
+let shadowSize = SHADOW_MAP;   // the adaptive quality can halve it (see setQuality)
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
 Object.assign(sun.shadow.camera, { near: 1, far: 2200 });
 sun.shadow.bias = -0.0001;
@@ -221,7 +277,7 @@ scene.add(hemi, sun, sun.target);
 const SUN_LX = new V3().crossVectors(new V3(0, 1, 0), SUN).normalize(), SUN_LY = new V3().crossVectors(SUN, SUN_LX);
 const sunAt = new V3();
 function placeSun(center, half) {
-  const c = sun.shadow.camera, texel = 2 * half / SHADOW_MAP;
+  const c = sun.shadow.camera, texel = 2 * half / shadowSize;
   if (c.right !== half) {
     c.left = c.bottom = -half; c.right = c.top = half; c.updateProjectionMatrix();
     sun.shadow.normalBias = Math.max(0.12, texel * 3);
@@ -230,6 +286,53 @@ function placeSun(center, half) {
   sunAt.copy(SUN_LX).multiplyScalar(u).addScaledVector(SUN_LY, v).addScaledVector(SUN, center.dot(SUN));
   sun.target.position.copy(sunAt);
   sun.position.copy(sunAt).addScaledVector(SUN, 1400);
+}
+
+// ---------------------------------------------------------------- quality
+// Rungs of render quality, lowest first: the pixel ratio climbs to the old fixed cap (1.5, or the screen's own ratio),
+// and below the lowest pixel ratio the shadow map halves, down to 1024. Phones start no higher than a 1.25 pixel ratio.
+// While playing, a smoothed frame time over 24 ms for 2 s drops a rung and one under 18 ms for 6 s climbs one. A drop
+// that doesn't make frames faster (a 30 Hz display, a CPU-bound machine) is undone and stops further drops; a rung that
+// has to be dropped within 10 s of climbing to it becomes the ceiling. Off under automation (navigator.webdriver), so
+// test screenshots keep full quality; the test hook can switch it on.
+const PR_CAP = Math.min(window.devicePixelRatio || 1, 1.5);
+const QSTEPS = [];
+for (let s = 1024; s < SHADOW_MAP; s *= 2) QSTEPS.push({ pr: Math.min(0.75, PR_CAP), shadow: s });
+for (const pr of [0.75, 1, 1.25].filter(r => r < PR_CAP - 0.01).concat(PR_CAP)) QSTEPS.push({ pr, shadow: SHADOW_MAP });
+const quality = { auto: !navigator.webdriver, lvl: 0, floor: 0, ceil: QSTEPS.length - 1, ema: 1 / 60, slow: 0, fast: 0, since: 0, probe: 0, lastUp: false };
+function setQuality(i) {
+  const q = quality, s = QSTEPS[i];
+  q.lastUp = i > q.lvl; q.lvl = i; q.since = q.slow = q.fast = 0;
+  if (renderer.getPixelRatio() !== s.pr) renderer.setPixelRatio(s.pr);   // resizes the drawing buffer
+  if (s.shadow !== shadowSize) {
+    shadowSize = s.shadow;
+    sun.shadow.mapSize.set(shadowSize, shadowSize);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }   // three makes a new one at the next render
+    sun.shadow.camera.right = -1;   // placeSun recomputes the texel size and bias
+  }
+}
+{
+  let i = QSTEPS.length - 1;
+  if (isTouch) while (i > 0 && QSTEPS[i].pr > 1.25) i--;
+  setQuality(i);
+  quality.lastUp = false;
+}
+function adaptQuality(sec) {
+  const q = quality;
+  if (!q.auto || state !== 'play' || sec > 0.25) { q.slow = q.fast = 0; return; }   // menus and one-off hitches don't count
+  q.ema += (sec - q.ema) * Math.min(1, sec / 0.5);
+  q.since += sec;
+  if (q.probe && q.since > 2) {
+    if (q.ema > q.probe * 0.92) { setQuality(q.lvl + 1); q.floor = q.lvl; q.lastUp = false; }   // no faster: undo, stop dropping
+    q.probe = 0;
+  }
+  q.slow = q.ema > 0.024 ? q.slow + sec : 0;
+  q.fast = q.ema < 0.018 ? q.fast + sec : 0;
+  if (q.slow > 2 && q.lvl > q.floor) {
+    if (q.lastUp && q.since < 10) q.ceil = q.lvl - 1;
+    q.probe = q.ema;
+    setQuality(q.lvl - 1);
+  } else if (q.fast > 6 && q.lvl < q.ceil && q.since > 10) setQuality(q.lvl + 1);
 }
 
 // ---------------------------------------------------------------- textures
@@ -638,18 +741,19 @@ const tokens = [];
     if (sphereHits(s, 1.3) || spots.some(o => o.distanceTo(s) < 6)) continue; // a water tower stands there, or a repeat
     spots.push(s);
   }
-  for (let i = 0; i < 16; i++) {
+  // 13 over intersections; the last 3 of the 40 lead away from the spawn (see addRouteTokens)
+  for (let i = 0; i < 13; i++) {
     const gi = 1 + ((rnd() * (N - 1)) | 0), gj = 1 + ((rnd() * (N - 1)) | 0);
     spots.push(new V3(-HALF + gi * P, 20 + rnd() * 60, -HALF + gj * P));
   }
-  spots.forEach((pos, i) => {
-    const m = new THREE.Mesh(tokenGeo, tokenMat);
-    m.position.copy(pos); m.userData.phase = i;
-    scene.add(m);
-    tokens.push({ pos, mesh: m, taken: false });
-  });
+  spots.forEach(addToken);
 }
-$('tok-total').textContent = tokens.length;
+function addToken(pos) {
+  const m = new THREE.Mesh(tokenGeo, tokenMat);
+  m.position.copy(pos); m.userData.phase = tokens.length;
+  scene.add(m);
+  tokens.push({ pos, mesh: m, taken: false, i: tokens.length });
+}
 
 // ---------------------------------------------------------------- hero model
 // Rigid segments with rounded ends, so bent elbows and knees close up instead of cracking open. Each segment is one
@@ -816,6 +920,36 @@ function placeWeb(w, a, b) {
 const zipMarker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 32), new THREE.MeshBasicMaterial({ color: '#ffc35a', transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, fog: false }));
 zipMarker.renderOrder = 10; zipMarker.visible = false; scene.add(zipMarker);
 
+// token beacons: a soft column of gold light rising 90 m from every token, so tokens read from across the city.
+// Additive and unfogged, kept at least about 4 px wide at any distance (like the webs), faded out up close; one
+// instanced draw (made in addBeacons once every token is placed).
+const beaconMat = new THREE.ShaderMaterial({
+  uniforms: { px: webMat.uniforms.px },
+  vertexShader: `uniform float px; varying float vH; varying float vEdge;
+    void main() {
+      mat4 mv = modelViewMatrix * instanceMatrix;
+      float depth = -(mv * vec4(0.0, position.y, 0.0, 1.0)).z;
+      float r = max(0.9, depth * px * 1.6);
+      vH = position.y;
+      vEdge = abs(normalize(mat3(mv) * normal).z) * smoothstep(10.0, 40.0, depth);
+      gl_Position = projectionMatrix * mv * vec4(position.x * r, position.y, position.z * r, 1.0);
+    }`,
+  fragmentShader: `varying float vH; varying float vEdge;
+    void main() { gl_FragColor = vec4(vec3(1.0, 0.7, 0.3) * (vEdge * vEdge * (1.0 - vH) * 0.55), 1.0); }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+});
+let beacons = null;
+const beaconM = new THREE.Matrix4();
+function addBeacons() {
+  beacons = new THREE.InstancedMesh(webGeo, beaconMat, tokens.length);
+  for (const t of tokens) beacons.setMatrixAt(t.i, beaconM.makeScale(1, 90, 1).setPosition(t.pos.x, t.pos.y + 1.6, t.pos.z));
+  scene.add(beacons);
+}
+function beaconOff(t) {
+  beacons.setMatrixAt(t.i, beaconM.makeScale(0, 0, 0));
+  beacons.instanceMatrix.needsUpdate = true;
+}
+
 // ---------------------------------------------------------------- player state
 const R = 1.0, G = 34, MAX_SPEED = 80;
 // physics runs at a fixed rate, decoupled from rendering; a frame catches up at most 0.1 s (slower than 10 fps runs slow)
@@ -865,66 +999,150 @@ function spawn() {
   // look along x toward the landmark, turned a little toward the street on the landmark's side
   teleport(at, new V3(), Math.atan2(sx, 0.35 * sz), 0.05);
 }
+// The last three tokens hang over the street the spawn looks down, 70, 140 and 210 m out at swing height: a target
+// in view from the first second, and a trail that leads a first swing chain toward downtown.
+function addRouteTokens() {
+  const fx = Math.sin(cam.yaw), fz = Math.cos(cam.yaw), alongX = Math.abs(fx) > Math.abs(fz);
+  const lat = alongX ? fz : fx, from = alongX ? p.pos.z : p.pos.x;   // the street on the side the view leans toward
+  const k = (from + HALF) / P, street = -HALF + (lat > 0 ? Math.ceil(k) : Math.floor(k)) * P;
+  for (let i = 1; i <= 3; i++) {
+    const a = clamp((alongX ? p.pos.x : p.pos.z) + Math.sign(alongX ? fx : fz) * 70 * i, -HALF + 20, HALF - 20);
+    const pt = alongX ? new V3(a, p.pos.y - 2, street) : new V3(street, p.pos.y - 2, a);
+    while (sphereHits(pt, 3) || tokens.some(t => t.pos.distanceTo(pt) < 10)) pt.y += 6;
+    addToken(pt);
+  }
+}
 
 // ---------------------------------------------------------------- input
 const keys = new Set();
 const input = { swing: false, dive: false, jumpPress: false, zipPress: false, lookX: 0, lookY: 0 };
 let mouseSwing = false, touchSwing = false, touchDive = false, padSwing = false, padDive = false;
 let lastLook = -10, clock = 0;
-const isTouch = matchMedia('(pointer: coarse)').matches;
 if (isTouch) document.body.classList.add('touch');
 
 addEventListener('keydown', e => {
-  if (state === 'title' && e.key === 'Enter') { start(); return; }
+  // browser shortcuts are never game keys (Ctrl+W closes the tab), so nothing is bound to Ctrl or Cmd
+  if (e.ctrlKey || e.metaKey) return;
+  if (state === 'title') { if (e.key === 'Enter') { e.preventDefault(); start(); } return; }
+  if (state === 'paused') {
+    if (e.repeat) return;
+    if (e.code === 'KeyP' || e.key === 'Enter') { e.preventDefault(); resume(); }
+    if (e.code === 'KeyM') toggleMute();
+    return;
+  }
   if (state !== 'play') return;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   keys.add(e.code);
   if (e.code === 'Space') input.jumpPress = true;
   if (e.code === 'KeyE' || e.code === 'KeyF') input.zipPress = true;
-  if (e.code === 'KeyP') pause();
-  if (e.code === 'KeyM') muted = !muted;
+  // Esc only gets here while the mouse isn't captured; with it captured, Esc releases it and that pauses
+  if (e.code === 'KeyP' || e.code === 'Escape') pause();
+  if (e.code === 'KeyM') toggleMute();
 });
-addEventListener('keyup', e => keys.delete(e.code));
-addEventListener('blur', () => { keys.clear(); mouseSwing = false; });
+addEventListener('keyup', e => {
+  keys.delete(e.code);
+  if (e.key === 'Meta') keys.clear();   // macOS drops the keyup of keys let go while Cmd was down
+});
+addEventListener('blur', () => {
+  keys.clear(); mouseSwing = false;
+  if (state === 'play' && !isTouch) pause();   // the keyboard went elsewhere (another window, a browser dialog)
+});
 
 const view = renderer.domElement;
+// Pointer lock. The click or key that starts or resumes play asks for it. Chrome refuses a new lock for about 1.25 s
+// after the player pressed Esc to leave one, so Resume waits that out (lock.lostAt). If a request is refused, play
+// goes on with the free cursor, which still looks around, and the next click on the game asks again without firing a
+// web. A sandbox that blocks the lock, or three refusals in a row, give up on it (lock.unavailable): clicks swing as
+// usual and resting the free cursor at a screen edge keeps turning the view.
+let cursorX = -1;   // the cursor's x while it's over the game (-1: outside), for turning at the screen edge without the lock
+const lock = { pending: false, reqAt: 0, unavailable: isTouch || !view.requestPointerLock, fails: 0, lostAt: -1e9, pageExit: false, noteT: 0 };
+function lockPointer() {
+  if (lock.unavailable || document.pointerLockElement) return;
+  if (lock.pending) {
+    if (performance.now() - lock.reqAt < 1500) return;
+    lockFailed(null);   // never answered: count it and ask again
+    if (lock.unavailable) return;
+  }
+  lock.pending = true; lock.reqAt = performance.now();
+  try {
+    const r = view.requestPointerLock();
+    if (r && r.catch) r.catch(lockFailed);
+  } catch (err) { lockFailed(err); }
+}
+function lockFailed(err) {
+  if (err && /sandbox/i.test(err.message || '')) lock.unavailable = true;
+  if (!lock.pending) return;   // the promise and the pointerlockerror event report the same refusal
+  lock.pending = false;
+  if (++lock.fails >= 3) lock.unavailable = true;
+}
+document.addEventListener('pointerlockchange', () => {
+  lock.pending = false;
+  cursorX = -1;   // unknown until the free cursor moves again
+  if (document.pointerLockElement) { lock.fails = 0; return; }
+  if (lock.pageExit) { lock.pageExit = false; return; }   // pause() let it go: already paused (or quickly resumed)
+  lock.lostAt = performance.now();   // the player pressed Esc (or the browser took it back)
+  if (state === 'play') pause();
+});
+document.addEventListener('pointerlockerror', () => lockFailed(null));
+document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') pause(); });
+
 view.addEventListener('contextmenu', e => e.preventDefault());
 view.addEventListener('mousedown', e => {
   if (state !== 'play' || isTouch) return;
-  if (!document.pointerLockElement) lockPointer();
+  // a click that captures the mouse does only that, so taking the mouse back never fires a stray web
+  if (!document.pointerLockElement && !lock.unavailable) { lockPointer(); return; }
   if (e.button === 0) mouseSwing = true;
   if (e.button === 2) input.zipPress = true;
 });
 addEventListener('mouseup', e => { if (e.button === 0) mouseSwing = false; });
-let hadLock = false, lockFailed = false;
 addEventListener('mousemove', e => {
-  if (state !== 'play' || isTouch) return;
-  if (!document.pointerLockElement && !lockFailed) return;
+  if (isTouch) return;
+  if (!document.pointerLockElement) cursorX = e.clientX;   // (a locked cursor's position means nothing)
+  if (state !== 'play') return;
   // Chrome can report the cursor's jump to the lock point as one huge movement: no hand moves 250 px in one event
   if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
+  // without the lock (not granted yet, refused, or blocked here) the free cursor still looks around
   input.lookX += e.movementX || 0; input.lookY += e.movementY || 0;
 });
-function lockPointer() {
-  if (isTouch || !view.requestPointerLock) return;
-  try {
-    const r = view.requestPointerLock();
-    if (r && r.catch) r.catch(() => { lockFailed = true; });
-  } catch (err) { lockFailed = true; }
+addEventListener('mouseout', e => { if (!e.relatedTarget) cursorX = -1; });
+// the free cursor stops at the window's edge; resting it in the outer 6% keeps turning that way (up to 2 rad/s)
+function edgeLook(dt) {
+  if (isTouch || cursorX < 0 || document.pointerLockElement) return;
+  const u = cursorX / innerWidth;
+  input.lookX += (u < 0.06 ? (u - 0.06) / 0.06 : u > 0.94 ? (u - 0.94) / 0.06 : 0) * 900 * dt;
 }
-document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement) hadLock = true;
-  else if (hadLock && state === 'play') pause();
-});
-document.addEventListener('pointerlockerror', () => { lockFailed = true; });
-document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') pause(); });
+const hintEl = $('mouse-hint');
+let hintText = '';
+// what a click will do without the lock: capture the mouse, or (lock unavailable) a few seconds' note on edge turning
+function mouseHint(dt) {
+  let t = '';
+  if (!isTouch && !document.pointerLockElement) {
+    if (!lock.unavailable) t = lock.pending && performance.now() - lock.reqAt < 1500 ? '' : 'Click to capture the mouse';
+    else if ((lock.noteT += dt) < 6) t = 'Rest the cursor at a screen edge to keep turning';
+  }
+  if (t !== hintText) { hintText = t; hintEl.textContent = t; hintEl.hidden = !t; }
+}
 
-// touch: joystick, buttons, drag-to-look
+// Touch: a floating stick (a thumb anywhere on the lower left centres it under the thumb), buttons a thumb can slide
+// between (SWING onto JUMP drops the web and swing-jumps), and a drag anywhere else looks around.
 const stick = { id: null, x: 0, y: 0 };
 const stickEl = $('stick'), knob = $('knob');
-stickEl.addEventListener('pointerdown', e => { stick.id = e.pointerId; stickEl.setPointerCapture(e.pointerId); moveStick(e); });
+function grabStick(e) {
+  const h = stickEl.offsetWidth / 2;
+  stickEl.style.left = (e.clientX - h) + 'px'; stickEl.style.top = (e.clientY - h) + 'px'; stickEl.style.bottom = 'auto';
+  stick.id = e.pointerId;
+  stickEl.setPointerCapture(e.pointerId);   // the stick's own move and up handlers take it from here
+  stickEl.classList.add('on');
+  moveStick(e);
+}
+stickEl.addEventListener('pointerdown', e => { if (stick.id === null) grabStick(e); });
 stickEl.addEventListener('pointermove', e => { if (e.pointerId === stick.id) moveStick(e); });
-const endStick = e => { if (e.pointerId === stick.id) { stick.id = null; stick.x = stick.y = 0; knob.style.transform = ''; } };
+const endStick = e => {
+  if (e.pointerId !== stick.id) return;
+  stick.id = null; stick.x = stick.y = 0; knob.style.transform = '';
+  stickEl.style.left = stickEl.style.top = stickEl.style.bottom = ''; stickEl.classList.remove('on');
+};
 stickEl.addEventListener('pointerup', endStick);
 stickEl.addEventListener('pointercancel', endStick);
 function moveStick(e) {
@@ -934,20 +1152,43 @@ function moveStick(e) {
   stick.x = dx; stick.y = dy;
   knob.style.transform = `translate(${dx * 38}px, ${dy * 38}px)`;
 }
-document.querySelectorAll('.tbtns button').forEach(btn => {
-  const b = btn.dataset.b;
-  btn.addEventListener('pointerdown', e => {
-    e.preventDefault(); btn.classList.add('on'); audio();
-    if (b === 'swing') touchSwing = true;
-    if (b === 'dive') touchDive = true;
-    if (b === 'jump') input.jumpPress = true;
-    if (b === 'zip') input.zipPress = true;
-  });
-  const up = () => { btn.classList.remove('on'); if (b === 'swing') touchSwing = false; if (b === 'dive') touchDive = false; };
-  btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', up); btn.addEventListener('pointerleave', up);
+// each finger holds the button it is on; sliding onto another button lets go of the first and presses the second
+const held = { swing: 0, dive: 0, jump: 0, zip: 0 }, btnEls = {}, fingers = new Map();
+const tbtns = document.querySelector('.tbtns');
+tbtns.querySelectorAll('button').forEach(b => { btnEls[b.dataset.b] = b; });
+function btnPress(b) {
+  if (held[b]++ === 0) btnEls[b].classList.add('on');
+  if (b === 'jump') input.jumpPress = true;
+  if (b === 'zip') input.zipPress = true;
+  touchSwing = held.swing > 0; touchDive = held.dive > 0;
+}
+function btnRelease(b) {
+  if (--held[b] === 0) btnEls[b].classList.remove('on');
+  touchSwing = held.swing > 0; touchDive = held.dive > 0;
+}
+tbtns.addEventListener('pointerdown', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  e.preventDefault(); audio();
+  fingers.set(e.pointerId, b.dataset.b); btnPress(b.dataset.b);
 });
+// a touch stays captured by the button it started on, so look up which button is under the finger now
+tbtns.addEventListener('pointermove', e => {
+  const was = fingers.get(e.pointerId);
+  if (!was) return;
+  const el = document.elementFromPoint(e.clientX, e.clientY), b = el && el.closest('.tbtns button');
+  if (!b || b.dataset.b === was) return;   // off the buttons: keep holding the last one
+  fingers.set(e.pointerId, b.dataset.b); btnRelease(was); btnPress(b.dataset.b);
+});
+const liftFinger = e => { const b = fingers.get(e.pointerId); if (b) { fingers.delete(e.pointerId); btnRelease(b); } };
+tbtns.addEventListener('pointerup', liftFinger);
+tbtns.addEventListener('pointercancel', liftFinger);
 const looks = new Map();
-view.addEventListener('pointerdown', e => { if (isTouch && state === 'play') looks.set(e.pointerId, { x: e.clientX, y: e.clientY }); });
+view.addEventListener('pointerdown', e => {
+  if (!isTouch || state !== 'play') return;
+  if (stick.id === null && e.clientX < innerWidth * 0.45 && e.clientY > innerHeight * 0.3) { grabStick(e); return; }
+  looks.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
 view.addEventListener('pointermove', e => {
   const l = looks.get(e.pointerId); if (!l) return;
   input.lookX += (e.clientX - l.x) * 2.2; input.lookY += (e.clientY - l.y) * 2.2;
@@ -955,28 +1196,36 @@ view.addEventListener('pointermove', e => {
 });
 const endLook = e => looks.delete(e.pointerId);
 view.addEventListener('pointerup', endLook); view.addEventListener('pointercancel', endLook);
+$('t-pause').addEventListener('click', () => pause());
+$('t-mute').addEventListener('click', () => toggleMute());
 
-// gamepad
-let padPrev = [];
-function pollPad() {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  const gp = pads && Array.from(pads).find(x => x);
-  padSwing = false; padDive = false;
+// gamepad (standard mapping)
+const padPrev = [], padStick = { x: 0, y: 0 };
+const padBtn = (gp, i) => !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.3));
+const padTap = (gp, i) => padBtn(gp, i) && !padPrev[i];
+const dz = v => Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85;   // dead zone, rescaled so full tilt is still 1
+function pollPad(dt) {
+  let pads = null;
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : null; } catch (err) { pads = null; }   // a permissions policy can forbid it
+  let gp = null;
+  if (pads) for (let i = 0; i < pads.length && !gp; i++) gp = pads[i] || null;
+  padSwing = padDive = false;
   if (!gp) return null;
-  const btn = i => !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.3));
-  const dz = v => Math.abs(v) < 0.15 ? 0 : v;
-  if (state === 'title' && (btn(0) || btn(9))) start();
-  else if (state === 'paused' && btn(9) && !padPrev[9]) resume();
-  else if (state === 'play' && btn(9) && !padPrev[9]) pause();
-  if (state === 'play') {
-    padSwing = btn(7) || btn(5);
-    padDive = btn(1);
-    if (btn(0) && !padPrev[0]) input.jumpPress = true;
-    if (btn(6) && !padPrev[6]) input.zipPress = true;
-    input.lookX += dz(gp.axes[2] || 0) * 14; input.lookY += dz(gp.axes[3] || 0) * 10;
+  const was = state;
+  if (state === 'title' && (padTap(gp, 0) || padTap(gp, 9))) start(false);
+  else if (state === 'paused' && padTap(gp, 9)) resume(false);
+  else if (state === 'play' && padTap(gp, 9)) pause();
+  if (state === 'play' && was === 'play') {
+    padSwing = padBtn(gp, 7) || padBtn(gp, 5);
+    padDive = padBtn(gp, 1);
+    if (padTap(gp, 0)) input.jumpPress = true;
+    if (padTap(gp, 6)) input.zipPress = true;
+    // right stick, per second: full tilt turns as fast as it used to at 60 fps, whatever the frame rate
+    input.lookX += dz(gp.axes[2] || 0) * 840 * dt; input.lookY += dz(gp.axes[3] || 0) * 600 * dt;
   }
-  padPrev = gp.buttons.map((_, i) => btn(i));
-  return { x: dz(gp.axes[0] || 0), y: dz(gp.axes[1] || 0) };
+  for (let i = 0; i < gp.buttons.length; i++) padPrev[i] = padBtn(gp, i);
+  padStick.x = dz(gp.axes[0] || 0); padStick.y = dz(gp.axes[1] || 0);
+  return padStick;
 }
 
 // ---------------------------------------------------------------- audio
@@ -1532,7 +1781,7 @@ function collectTokens(a, b) {
     const u = L2 > 1e-9 ? clamp((ox * sx + oy * sy + oz * sz) / L2, 0, 1) : 0;
     const dx = ox - sx * u, dy = oy - sy * u, dz = oz - sz * u;
     if (dx * dx + dy * dy + dz * dz > 9) continue;
-    t.taken = true; t.mesh.visible = false; tokensTaken++;
+    t.taken = true; t.mesh.visible = false; beaconOff(t); tokensTaken++;
     chime();
     showToast(tokensTaken === tokens.length ? 'EVERY TOKEN FOUND' : `TOKEN ${tokensTaken} / ${tokens.length}`);
   }
@@ -1541,27 +1790,79 @@ function collectTokens(a, b) {
 // ---------------------------------------------------------------- HUD helpers
 let toastTimer = 0;
 function showToast(t) { const el = $('toast'); el.textContent = t; el.style.opacity = 1; toastTimer = 1.1; }
-const tips = isTouch ? [] : [
+const tips = isTouch ? [
+  'Hold <kbd>Swing</kbd> to swing. Keep holding and webs chain automatically.',
+  'Tap <kbd>Jump</kbd> just past the low point of a swing for a swing jump, or slide your thumb from <kbd>Swing</kbd> onto <kbd>Jump</kbd>.',
+  'Drag the right side of the screen to look. Put the centre dot on a ledge and tap <kbd>Zip</kbd> to zip there.',
+  'Nothing to swing from? Tap <kbd>Jump</kbd> in the air to web-zip forward.',
+  'Push the stick into a wall to run up it.',
+  'Follow the gold marker to the nearest token.'
+] : [
   'Hold <kbd>Left click</kbd> to swing. Keep holding and webs chain automatically.',
   'Tap <kbd>Space</kbd> just past the low point of a swing for a swing jump. Time it well for a perfect boost.',
   'Aim at a ledge and press <kbd>E</kbd> or <kbd>Right click</kbd> to zip there. Tap <kbd>Space</kbd> as you arrive to point-launch.',
   'Nothing to swing from? Tap <kbd>Space</kbd> in the air to web-zip forward.',
   'Hold <kbd>W</kbd> into a wall to wall-run straight up.',
-  'Hold <kbd>C</kbd> while falling to dive, then swing to turn that speed into momentum.'
+  'Hold <kbd>C</kbd> while falling to dive, then swing to turn that speed into momentum.',
+  'Follow the gold marker to the nearest token. <kbd>P</kbd> pauses, <kbd>M</kbd> mutes.'
 ];
+// The nearest token still out there: a gold diamond over it with its distance, or, when it's off screen or behind the
+// camera, a diamond on the screen's edge (clear of the readouts and touch controls) with an arrow pointing the way.
+const marker = { el: $('marker'), arrow: document.querySelector('#marker .arrow'), dist: $('marker-dist'), tok: null, pick: 0, on: false, edge: false, text: '', x: 0, y: 0, a: 0 };
+const mkv = new V3();
+function updateMarker(dt) {
+  const m = marker;
+  m.pick -= dt;
+  if (m.pick <= 0 || (m.tok && m.tok.taken)) {
+    m.pick = 0.25; m.tok = null;
+    let best = Infinity;
+    for (const t of tokens) if (!t.taken) { const d = t.pos.distanceToSquared(drawPos); if (d < best) { best = d; m.tok = t; } }
+  }
+  if (!!m.tok !== m.on) { m.on = !!m.tok; m.el.hidden = !m.on; }
+  if (!m.tok) return;
+  const W = innerWidth / 2, H = innerHeight / 2;
+  // the box the marker stays in, as distances from the screen's centre (y down)
+  const bx = W - 34, bUp = H - (isTouch ? 120 : 44), bDown = H - (isTouch ? Math.max(210, H * 0.5) : 110);
+  mkv.copy(m.tok.pos).applyMatrix4(camera.matrixWorldInverse);   // camera space, -z ahead
+  let x, y, edge;
+  if (mkv.z < -0.5) {
+    mkv.applyMatrix4(camera.projectionMatrix);
+    x = mkv.x * W; y = -mkv.y * H - 26;   // hovering just above the token
+    edge = x < -bx || x > bx || y < -bUp || y > bDown;
+  } else {
+    x = mkv.x; y = -mkv.y; edge = true;   // behind: point the way round
+    if (Math.abs(x) + Math.abs(y) < 1e-3) y = 1;
+  }
+  if (edge) {
+    // slide in along the line from the centre until it's inside the box
+    const k = Math.min(bx / Math.max(Math.abs(x), 1e-6), (y < 0 ? bUp : bDown) / Math.max(Math.abs(y), 1e-6));
+    m.a = Math.atan2(y, x);
+    x *= k; y *= k;
+    m.arrow.style.transform = `rotate(${m.a.toFixed(3)}rad)`;
+  }
+  if (edge !== m.edge) { m.edge = edge; m.el.classList.toggle('edge', edge); }
+  if (Math.abs(x - m.x) > 0.5 || Math.abs(y - m.y) > 0.5) {
+    m.x = x; m.y = y;
+    m.el.style.transform = `translate(${(W + x).toFixed(1)}px, ${(H + y).toFixed(1)}px)`;
+  }
+  const text = Math.round(m.tok.pos.distanceTo(drawPos)) + ' m';
+  if (text !== m.text) { m.text = text; m.dist.textContent = text; }
+}
 let tipIdx = 0, tipTimer = 0;
 function nextTip() { $('tip').innerHTML = tips[tipIdx]; $('tip').style.opacity = 1; tipIdx++; tipTimer = 7; }
 
 // ---------------------------------------------------------------- states
-let state = 'title';
+let state = 'title', resumeTimer = 0;
 function show(id) { ['title-screen', 'pause-screen'].forEach(s => { $(s).hidden = s !== id; }); }
-function start() {
+// lockMouse: false when a gamepad starts or resumes (no click to capture the mouse with)
+function start(lockMouse = true) {
+  if (state === 'play') return;
   audio();
   state = 'play';
   show(null);
   $('hud').hidden = false;
   $('touch').hidden = !isTouch;
-  lockPointer();
+  if (lockMouse) lockPointer();
   if (tipIdx === 0 && tips.length) nextTip();
 }
 function pause() {
@@ -1570,11 +1871,34 @@ function pause() {
   mouseSwing = false; keys.clear();
   $('pause-stats').textContent = `${tokensTaken} of ${tokens.length} tokens collected · top speed ${Math.round(topSpeed * 3.6)} km/h`;
   show('pause-screen');
-  $('resume-btn').focus();
+  // free the cursor for the menu (a P or gamepad pause would otherwise keep it locked and Resume unclickable)
+  if (document.pointerLockElement) { lock.pageExit = true; document.exitPointerLock(); }
+  if (!isTouch) $('resume-btn').focus({ preventScroll: true });
 }
-function resume() { start(); }
-$('start-btn').addEventListener('click', start);
-$('resume-btn').addEventListener('click', resume);
+function resume(withMouse = true) {
+  if (state !== 'paused' || resumeTimer) return;
+  // Chrome won't lock the mouse again until about 1.25 s after Esc released it: wait that out on the pause screen
+  const wait = withMouse && !lock.unavailable ? 1300 - (performance.now() - lock.lostAt) : 0;
+  if (wait > 0) {
+    const b = $('resume-btn');
+    b.disabled = true; b.textContent = 'Resuming…';
+    resumeTimer = setTimeout(() => {
+      resumeTimer = 0; b.disabled = false; b.textContent = 'Resume';
+      if (state === 'paused') start();
+    }, wait);
+    return;
+  }
+  start(withMouse);
+}
+function toggleMute() {
+  muted = !muted;
+  $('mute-btn').textContent = muted ? 'Sound off' : 'Sound on';
+  $('t-mute').setAttribute('aria-pressed', muted);
+  if (state === 'play') showToast(muted ? 'SOUND OFF' : 'SOUND ON');
+}
+$('start-btn').addEventListener('click', () => start());
+$('resume-btn').addEventListener('click', () => resume());
+$('mute-btn').addEventListener('click', toggleMute);
 
 // ---------------------------------------------------------------- animation
 // The body turns toward a target orientation at a capped rate (smoothly, never snapping round), and every joint eases
@@ -2071,17 +2395,20 @@ function updateCamera(dt) {
   const half = SHADOW_HALF[shadowLv];
   placeSun(sunCenter.copy(drawPos).addScaledVector(camF, half * 0.5), half);
 
-  $('vignette').style.opacity = clamp((speed - 25) / 50, 0, 0.9).toFixed(2);
+  const vig = clamp((speed - 25) / 50, 0, 0.9).toFixed(2);
+  if (vig !== hudEl.vigVal) { hudEl.vigVal = vig; hudEl.vignette.style.opacity = vig; }
   if (windGain && actx) windGain.gain.setTargetAtTime(muted || state !== 'play' ? 0 : clamp(Math.pow(speed / 70, 2) * 0.35, 0, 0.4), actx.currentTime, 0.1);
 }
 
 // ---------------------------------------------------------------- main loop
 let hudTimer = 0, last = performance.now(), testFreeze = false, crosshairZip = false;
+const hudEl = { spd: $('spd'), alt: $('alt'), tok: $('tok'), crosshair: $('crosshair'), vignette: $('vignette'), vigVal: '' };
 const zipLift = new V3();
 function simulate(dt, pad) {
   clock += dt;
 
   if (state === 'play') {
+    edgeLook(dt);
     applyLook();
     let ix = 0, iz = 0;
     if (keys.has('KeyW') || keys.has('ArrowUp')) iz += 1;
@@ -2094,7 +2421,7 @@ function simulate(dt, pad) {
     moveDir.set(0, 0, 0).addScaledVector(camF, iz).addScaledVector(camR, ix);
     if (moveDir.lengthSq() > 1) moveDir.normalize();
     input.swing = mouseSwing || touchSwing || padSwing || keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.dive = touchDive || padDive || keys.has('KeyC') || keys.has('ControlLeft');
+    input.dive = touchDive || padDive || keys.has('KeyC');
     // presses are latched until a physics step uses them, since a fast frame can run no step at all
     if (input.swing && !swingWas) swingTap = true;
     swingWas = input.swing;
@@ -2120,10 +2447,12 @@ function simulate(dt, pad) {
     hudTimer -= dt;
     if (hudTimer <= 0) {
       hudTimer = 0.1;
-      $('spd').textContent = Math.round(p.vel.length() * 3.6);
-      $('alt').textContent = Math.max(0, Math.round(p.pos.y - R));
-      $('tok').textContent = tokensTaken;
+      hudEl.spd.textContent = Math.round(p.vel.length() * 3.6);
+      hudEl.alt.textContent = Math.max(0, Math.round(p.pos.y - R));
+      hudEl.tok.textContent = tokensTaken;
+      mouseHint(0.1);
     }
+    updateMarker(dt);
     tipTimer -= dt;
     if (tipTimer <= 0) { if (tipIdx < tips.length) nextTip(); else $('tip').style.opacity = 0; }
   }
@@ -2131,13 +2460,15 @@ function simulate(dt, pad) {
   input.lookX = input.lookY = 0;
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) $('toast').style.opacity = 0; }
 
-  for (const t of tokens) {
-    if (t.taken) continue;
-    t.mesh.rotation.y = clock * 2 + t.mesh.userData.phase;
-    t.mesh.position.y = t.pos.y + Math.sin(clock * 2.5 + t.mesh.userData.phase) * 0.4;
+  // the paused world holds still behind the menu
+  if (state !== 'paused') {
+    for (const t of tokens) {
+      if (t.taken) continue;
+      t.mesh.rotation.y = clock * 2 + t.mesh.userData.phase;
+      t.mesh.position.y = t.pos.y + Math.sin(clock * 2.5 + t.mesh.userData.phase) * 0.4;
+    }
+    animateHero(dt);
   }
-
-  animateHero(dt);
   updateCamera(dt);
 
   // web strands stay at least 2.6 px wide: radius per metre of depth for this view
@@ -2154,21 +2485,25 @@ function simulate(dt, pad) {
     zipMarker.quaternion.copy(camera.quaternion);
   }
   const wallZip = !!(zipOk && !zipTarget.launch);
-  if (wallZip !== crosshairZip) { crosshairZip = wallZip; $('crosshair').classList.toggle('zip', wallZip); }
+  if (wallZip !== crosshairZip) { crosshairZip = wallZip; hudEl.crosshair.classList.toggle('zip', wallZip); }
 }
 function frame(now) {
-  const dt = Math.min(MAX_STEPS * STEP, (now - last) / 1000);
+  requestAnimationFrame(frame);   // first, so an exception in one frame can't stop the game for good
+  const sec = (now - last) / 1000, dt = Math.min(MAX_STEPS * STEP, sec);
   last = now;
-  if (!testFreeze) simulate(dt, pollPad());
+  if (!testFreeze) simulate(dt, pollPad(dt));
   renderer.render(scene, camera);
-  requestAnimationFrame(frame);
+  adaptQuality(sec);
 }
 
 spawn();
+addRouteTokens();
+$('tok-total').textContent = tokens.length;
+addBeacons();
 animateHero(0.016);
-renderer.compile(scene, camera);   // every shader up front (webs and the zip ring start hidden), so the first swing doesn't stall
+renderer.compile(scene, camera);   // every shader up front (webs, the zip ring and beacons), so the first swing doesn't stall
 requestAnimationFrame(frame);
-$('start-btn').focus();
+if (!isTouch) $('start-btn').focus({ preventScroll: true });   // (on a phone, focusing would scroll the title's heading away)
 
 // hook used by automated play tests
 //   p: player state; state: 'title' | 'play' | 'paused'
@@ -2189,9 +2524,16 @@ $('start-btn').focus();
 //     { j1, j2, end }, spine, head),
 //     webs (the two strand meshes), webRadius(depth) (a strand's radius in metres at that view depth), zipMarker,
 //     zipTarget (null or { point, show, launch }), renderer, scene, sun (the shadow-casting light), input
+//   added for input/flow tests: pause(), resume() (as the Resume button; the mouse lock waits out Chrome's cooldown),
+//     lock ({ pending, unavailable, fails, lostAt }: pointer-lock state), quality ({ auto, lvl, ema, ... }; auto is off
+//     under automation) with QSTEPS (the rungs: { pr, shadow }), setQuality(i) and adaptQuality(frameSeconds) (feed
+//     it frame times to test the adaptive tier), marker (the nearest-token HUD marker: tok, on, edge, x, y),
+//     beacons (the instanced beacon mesh)
 window.__webSlinger = {
   p, get state() { return state; }, boxes, cam, tokens, PHYS_HZ, camera, drawPos,
   hero, heroBase, anim, joints, webs, webRadius, zipMarker, get zipTarget() { return zipTarget; }, renderer, scene, sun, input,
+  lock, quality, QSTEPS, setQuality, adaptQuality, marker, get beacons() { return beacons; },
+  pause() { pause(); }, resume() { resume(); },
   look(dx, dy) { input.lookX += dx; input.lookY += dy; },
   freeze(on = true) { testFreeze = on; },
   run(seconds, held = {}, frameDt = 1 / 60) {
