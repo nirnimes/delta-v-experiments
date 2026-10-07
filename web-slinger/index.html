@@ -35,6 +35,7 @@ body { background: var(--ink); color: var(--paper); font-family: var(--font-ui);
 .meta { font-size: 18px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--paper); text-shadow: 0 1px 6px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; }
 .meta b { color: var(--gold); font-weight: 700; }
 #crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(244, 239, 230, .75); box-shadow: 0 0 0 2px rgba(10,14,28,.4); }
+#crosshair.zip { width: 14px; height: 14px; margin: -9px 0 0 -9px; background: transparent; border: 2px solid rgba(244, 239, 230, .9); }
 #tip {
   position: absolute; left: 24px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); max-width: min(420px, calc(100% - 200px));
   background: var(--glass); border-left: 4px solid var(--red); padding: 8px 14px; font-size: 17px; line-height: 1.3;
@@ -169,6 +170,11 @@ const sky = new THREE.Mesh(
     uniforms: { sunDir: { value: SUN } },
     vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
     fragmentShader: `uniform vec3 sunDir; varying vec3 vDir;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
       void main(){
         vec3 d = normalize(vDir); float h = d.y;
         vec3 zen = vec3(0.17, 0.29, 0.55), mid = vec3(0.62, 0.58, 0.70), hor = vec3(0.92, 0.65, 0.49);
@@ -176,51 +182,153 @@ const sky = new THREE.Mesh(
         c = mix(c, zen, smoothstep(0.18, 0.75, h));
         c = mix(c, vec3(0.55, 0.42, 0.40), smoothstep(0.0, -0.25, h));
         float s = max(dot(d, sunDir), 0.0);
-        c += vec3(1.0, 0.62, 0.32) * pow(s, 6.0) * 0.45;
-        c += vec3(1.0, 0.92, 0.75) * smoothstep(0.9975, 0.999, s);
-        gl_FragColor = vec4(c, 1.0);
+        c += vec3(1.0, 0.62, 0.32) * pow(s, 6.0) * 0.45 + vec3(1.0, 0.7, 0.4) * pow(s, 300.0) * 0.6;
+        // thin streaks of cloud on a flat layer, lit pink-gold toward the sun and lilac away from it
+        vec2 q = d.xz / max(h, 0.04) * vec2(0.9, 2.6) + vec2(3.0, 1.0);
+        float n = noise(q) * 0.55 + noise(q * 2.3 + 7.0) * 0.3 + noise(q * 5.1 + 3.0) * 0.15;
+        float cl = smoothstep(0.52, 0.8, n) * smoothstep(0.02, 0.1, h) * (1.0 - smoothstep(0.35, 0.7, h));
+        c = mix(c, mix(vec3(0.72, 0.6, 0.72), vec3(1.0, 0.72, 0.5), pow(s, 3.0)), cl * 0.7);
+        c += vec3(1.0, 0.95, 0.8) * smoothstep(0.99965, 0.9999, s);   // the sun's disc, about 1.4 degrees across
+        // c is a display colour: decode it to linear, then encode for the target (the screen, or the environment
+        // map's RGBE when the sky is captured for reflections)
+        gl_FragColor = linearToOutputTexel(vec4(pow(c, vec3(2.2)), 1.0));
       }`
   })
 );
 sky.renderOrder = -1;
 scene.add(sky);
+// image-based light: the sky, prefiltered per roughness, lights and reflects in every standard material (window
+// glass mirrors the sunset)
+{
+  const pmrem = new THREE.PMREMGenerator(renderer), envScene = new THREE.Scene();
+  envScene.add(new THREE.Mesh(sky.geometry, sky.material));
+  scene.environment = pmrem.fromScene(envScene, 0, 1, 4000).texture;
+  pmrem.dispose();
+}
 
-const hemi = new THREE.HemisphereLight('#bcc9ff', '#7a5a48', 0.8);
+const hemi = new THREE.HemisphereLight('#bcc9ff', '#7a5a48', 0.35);
 const sun = new THREE.DirectionalLight('#ffc591', 2.3);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -140, right: 140, top: 140, bottom: -140, near: 10, far: 900 });
-sun.shadow.bias = -0.0004;
-sun.shadow.normalBias = 0.6;
+// a 4096 map where the GPU allows it (not on phones), so one map can cover a wide area sharply
+const SHADOW_MAP = !matchMedia('(pointer: coarse)').matches && renderer.capabilities.maxTextureSize >= 8192 ? 4096 : 2048;
+sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
+Object.assign(sun.shadow.camera, { near: 1, far: 2200 });
+sun.shadow.bias = -0.0001;
 scene.add(hemi, sun, sun.target);
+// Shadows, cascade-lite: one map whose square follows the view. It's snapped to whole texels in light space so its
+// edges don't crawl as it moves, and it is wider the higher the view (the title shot covers the whole city).
+// The light sits 1400 m up-sun so the long golden-hour shadows of towers far toward the sun still reach the view.
+const SUN_LX = new V3().crossVectors(new V3(0, 1, 0), SUN).normalize(), SUN_LY = new V3().crossVectors(SUN, SUN_LX);
+const sunAt = new V3();
+function placeSun(center, half) {
+  const c = sun.shadow.camera, texel = 2 * half / SHADOW_MAP;
+  if (c.right !== half) {
+    c.left = c.bottom = -half; c.right = c.top = half; c.updateProjectionMatrix();
+    sun.shadow.normalBias = Math.max(0.12, texel * 3);
+  }
+  const u = Math.round(center.dot(SUN_LX) / texel) * texel, v = Math.round(center.dot(SUN_LY) / texel) * texel;
+  sunAt.copy(SUN_LX).multiplyScalar(u).addScaledVector(SUN_LY, v).addScaledVector(SUN, center.dot(SUN));
+  sun.target.position.copy(sunAt);
+  sun.position.copy(sunAt).addScaledVector(SUN, 1400);
+}
 
 // ---------------------------------------------------------------- textures
 const aniso = renderer.capabilities.getMaxAnisotropy();
-function facadeTextures() {
+// Facade styles, each 8 x 8 bays of 4 m (one 32 m repeat): colour, the glow of lit windows, and roughness (G) /
+// metalness (B), so glass is glossy and mirrors the sky while walls stay matte. Lit windows are warm interiors, matte
+// enough that their glow isn't lost under reflections, and read against the shaded faces at dusk.
+const OFFICE = 0, GLASS = 1, BRICK = 2;
+function facadeTextures(style) {
   const S = 512, cells = 8, cs = S / cells;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const e = document.createElement('canvas'); e.width = e.height = S;
-  const g = c.getContext('2d'), ge = e.getContext('2d');
-  g.fillStyle = '#ddd7cd'; g.fillRect(0, 0, S, S);
+  const canvas = () => { const c = document.createElement('canvas'); c.width = c.height = S; return c; };
+  const c = canvas(), e = canvas(), r = canvas();
+  const g = c.getContext('2d'), ge = e.getContext('2d'), gr = r.getContext('2d');
   ge.fillStyle = '#000'; ge.fillRect(0, 0, S, S);
-  const warm = ['#ffd08a', '#ffbf6e', '#ffe2b0', '#cfe3ff'];
-  for (let r = 0; r < cells; r++) for (let k = 0; k < cells; k++) {
-    const x = k * cs, y = r * cs;
-    g.fillStyle = '#c9c1b5'; g.fillRect(x, y + cs - 7, cs, 7);
-    const wx = x + 9, wy = y + 9, ww = cs - 18, wh = cs - 22;
-    const lg = g.createLinearGradient(wx, wy, wx + ww, wy + wh);
-    lg.addColorStop(0, '#7f9cbc'); lg.addColorStop(0.5, '#3c5574'); lg.addColorStop(1, '#1b2638');
-    g.fillStyle = lg; g.fillRect(wx, wy, ww, wh);
-    g.fillStyle = 'rgba(255,255,255,0.22)'; g.fillRect(wx, wy, ww, 3);
-    g.fillStyle = '#9a948b'; g.fillRect(wx + ww / 2 - 1, wy, 2, wh);
-    if (Math.random() < 0.22) { ge.fillStyle = warm[(Math.random() * warm.length) | 0]; ge.fillRect(wx, wy, ww, wh); }
+  const rm = (rough, metal) => `rgb(0,${Math.round(rough * 255)},${Math.round(metal * 255)})`;
+  const warm = ['#ffc46e', '#ffb24f', '#ffd9a0', '#ffcf86', '#ffbe7a', '#bcd2ff'];
+  const pane = (x, y, w, h, top, mid, bot, rough, metal) => {
+    const lg = g.createLinearGradient(x, y, x + w * 0.35, y + h);
+    lg.addColorStop(0, top); lg.addColorStop(0.55, mid); lg.addColorStop(1, bot);
+    g.fillStyle = lg; g.fillRect(x, y, w, h);
+    gr.fillStyle = rm(rough, metal); gr.fillRect(x, y, w, h);
+  };
+  // a lit room behind the glass, with a darker band of furniture below the sill line, sometimes behind blinds
+  const lit = (x, y, w, h, chance) => {
+    if (Math.random() >= chance) return;
+    ge.fillStyle = warm[(Math.random() * warm.length) | 0]; ge.fillRect(x, y, w, h);
+    ge.fillStyle = 'rgba(0,0,0,0.45)'; ge.fillRect(x, y + h * 0.72, w, h * 0.28);
+    if (Math.random() < 0.3) { ge.fillStyle = 'rgba(0,0,0,0.3)'; for (let b = y + 2; b < y + h * 0.7; b += 4) ge.fillRect(x, b, w, 1.5); }
+    g.fillStyle = '#6e5c48'; g.fillRect(x, y, w, h);
+    gr.fillStyle = rm(0.45, 0); gr.fillRect(x, y, w, h);
+  };
+  if (style === GLASS) {
+    // curtain wall: floor-to-ceiling glass, slim mullions, a dark spandrel at each floor slab
+    g.fillStyle = '#3a414c'; g.fillRect(0, 0, S, S);
+    gr.fillStyle = rm(0.35, 0.8); gr.fillRect(0, 0, S, S);
+    for (let row = 0; row < cells; row++) for (let k = 0; k < cells; k++) {
+      const x = k * cs, y = row * cs, wy = y + 2, wh = cs - 13;
+      pane(x + 2, wy, cs - 4, wh, '#c8d5e2', '#8ea3b9', '#5f758e', 0.04, 0.9);
+      lit(x + 2, wy, cs - 4, wh, 0.12);
+      g.fillStyle = '#7c8794'; g.fillRect(x + cs / 2 - 1, wy, 2, wh);
+      g.fillStyle = '#59616c'; g.fillRect(x, y + cs - 11, cs, 2);
+    }
+  } else if (style === BRICK) {
+    // brick courses with a little shade variety per brick, punched windows with white frames, stone lintels and sills
+    g.fillStyle = '#8a7768'; g.fillRect(0, 0, S, S);
+    gr.fillStyle = rm(0.92, 0); gr.fillRect(0, 0, S, S);
+    for (let yy = 0; yy < S; yy += 4) for (let xx = (yy / 4) % 2 ? -4 : 0; xx < S; xx += 8) {
+      const v = 0.82 + Math.random() * 0.26;
+      g.fillStyle = `rgb(${(160 * v) | 0},${(88 * v) | 0},${(64 * v) | 0})`; g.fillRect(xx, yy, 7, 3);
+    }
+    for (let row = 0; row < cells; row++) for (let k = 0; k < cells; k++) {
+      const x = k * cs, y = row * cs, wx = x + 18, ww = cs - 36, wy = y + 15, wh = cs - 30;
+      g.fillStyle = '#cfc5b5'; g.fillRect(wx - 4, wy - 6, ww + 8, 4); g.fillRect(wx - 3, wy + wh + 2, ww + 6, 3);
+      g.fillStyle = '#ebe5da'; g.fillRect(wx - 2, wy - 2, ww + 4, wh + 4);
+      gr.fillStyle = rm(0.5, 0); gr.fillRect(wx - 2, wy - 2, ww + 4, wh + 4);
+      pane(wx, wy, ww, wh, '#7d8fa3', '#3f5064', '#212a36', 0.12, 0.5);
+      lit(wx, wy, ww, wh, 0.3);
+      g.fillStyle = '#ebe5da'; g.fillRect(wx, wy + wh * 0.42, ww, 2);
+    }
+  } else {
+    // stone office block: punched windows with a centre mullion and a band at each floor
+    g.fillStyle = '#ddd6ca'; g.fillRect(0, 0, S, S);
+    gr.fillStyle = rm(0.88, 0); gr.fillRect(0, 0, S, S);
+    for (let row = 0; row < cells; row++) for (let k = 0; k < cells; k++) {
+      const x = k * cs, y = row * cs, wx = x + 9, wy = y + 9, ww = cs - 18, wh = cs - 22;
+      g.fillStyle = '#c8c0b4'; g.fillRect(x, y + cs - 7, cs, 7);
+      pane(wx, wy, ww, wh, '#b4c4d4', '#6c8399', '#3c4e64', 0.06, 0.75);
+      lit(wx, wy, ww, wh, 0.22);
+      g.fillStyle = '#9a948b'; g.fillRect(wx + ww / 2 - 1, wy, 2, wh);
+      gr.fillStyle = rm(0.6, 0); gr.fillRect(wx + ww / 2 - 1, wy, 2, wh);
+    }
   }
-  const make = cv => {
+  const make = (cv, srgb) => {
     const t = new THREE.CanvasTexture(cv);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso;
+    if (srgb) t.encoding = THREE.sRGBEncoding;
     return t;
   };
-  return { map: make(c), emissive: make(e) };
+  return { map: make(c, true), emissive: make(e, true), rm: make(r, false) };
+}
+
+// gravel roof: speckled chippings, darker tar patches and the seams of the membrane (a 16 m tile)
+function roofTexture() {
+  const S = 256;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#b9b2a8'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 9; i++) {
+    g.fillStyle = `rgba(70,64,58,${0.03 + Math.random() * 0.05})`;
+    g.beginPath(); g.ellipse(Math.random() * S, Math.random() * S, 10 + Math.random() * 40, 6 + Math.random() * 24, Math.random() * 3, 0, Math.PI * 2); g.fill();
+  }
+  for (let i = 0; i < 5000; i++) {
+    const v = Math.random() < 0.5 ? 95 + Math.random() * 40 : 195 + Math.random() * 40;
+    g.fillStyle = `rgba(${v | 0},${(v * 0.97) | 0},${(v * 0.93) | 0},0.4)`; g.fillRect(Math.random() * S, Math.random() * S, 1.5, 1.5);
+  }
+  g.fillStyle = 'rgba(80,74,68,0.35)'; g.fillRect(0, 0, S, 2); g.fillRect(0, 0, 2, S); g.fillRect(S / 2, 0, 1, S);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2); t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
+  return t;
 }
 
 const P = 90, BLOCK_MIN = 10, BLOCK_MAX = 80, N = 12, HALF = N * P / 2;
@@ -234,34 +342,31 @@ function groundTexture() {
   g.fillStyle = '#b4ada2'; g.fillRect((BLOCK_MIN + 4) * k, (BLOCK_MIN + 4) * k, (BLOCK_MAX - BLOCK_MIN - 8) * k, (BLOCK_MAX - BLOCK_MIN - 8) * k);
   g.fillStyle = '#e0b33c';                                                  // center lines on tile edges
   g.fillRect(0, 0, 3, S); g.fillRect(S - 3, 0, 3, S); g.fillRect(0, 0, S, 3); g.fillRect(0, S - 3, S, 3);
-  g.fillStyle = 'rgba(240,240,235,0.75)';                                    // lane dashes
-  for (let t = BLOCK_MIN * k; t < BLOCK_MAX * k; t += 40) {
+  g.fillStyle = 'rgba(240,240,235,0.75)';                                    // lane dashes, stopping short of the crosswalks
+  for (let t = (BLOCK_MIN + 5) * k; t < (BLOCK_MAX - 5) * k; t += 40) {
     g.fillRect(5 * k - 2, t, 4, 22); g.fillRect(S - 5 * k - 2, t, 4, 22);
     g.fillRect(t, 5 * k - 2, 22, 4); g.fillRect(t, S - 5 * k - 2, 22, 4);
   }
-  g.fillStyle = 'rgba(240,240,235,0.8)';                                     // crosswalks
-  for (let s = 0; s < BLOCK_MIN * k * 2; s += 18) {
-    const a = s < BLOCK_MIN * k ? s : S - (s - BLOCK_MIN * k) - 10;
-    g.fillRect(a, (BLOCK_MIN - 3) * k, 10, 2.5 * k); g.fillRect(a, (BLOCK_MAX + 0.5) * k, 10, 2.5 * k);
-    g.fillRect((BLOCK_MIN - 3) * k, a, 2.5 * k, 10); g.fillRect((BLOCK_MAX + 0.5) * k, a, 2.5 * k, 10);
+  // crosswalks: zebra bands just outside each intersection, one across each street; the bands never cross each other
+  g.fillStyle = 'rgba(240,240,235,0.8)';
+  for (let s = 6; s < BLOCK_MIN * k - 8; s += 18) for (const a of [s, S - s - 10]) {
+    g.fillRect(a, (BLOCK_MIN + 0.8) * k, 10, 3 * k); g.fillRect(a, (BLOCK_MAX - 3.8) * k, 10, 3 * k);
+    g.fillRect((BLOCK_MIN + 0.8) * k, a, 3 * k, 10); g.fillRect((BLOCK_MAX - 3.8) * k, a, 3 * k, 10);
   }
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(N, N); t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
   return t;
 }
 
+// suit texture: one cell of web lines (a dark line along two edges), tiled by the suit's UVs; (0.5, 0.5) is blank
 function webTexture() {
-  const S = 128;
+  const S = 64;
   const c = document.createElement('canvas'); c.width = c.height = S;
   const g = c.getContext('2d');
   g.fillStyle = '#fff'; g.fillRect(0, 0, S, S);
-  g.strokeStyle = 'rgba(20,10,10,0.55)'; g.lineWidth = 1.5;
-  for (let i = 0; i <= S; i += 16) {
-    g.beginPath(); g.moveTo(i, 0); g.lineTo(i, S); g.stroke();
-    g.beginPath(); g.moveTo(0, i); g.lineTo(S, i); g.stroke();
-  }
+  g.fillStyle = 'rgba(10,10,14,0.55)'; g.fillRect(0, 0, S, 2); g.fillRect(0, 0, 2, S);
   const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2); t.encoding = THREE.sRGBEncoding;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
   return t;
 }
 
@@ -269,7 +374,8 @@ function webTexture() {
 let seed = 20231020;
 const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 const boxes = [];
-const wall = { pos: [], nor: [], uv: [], col: [] };
+// facade geometry per style (bays: snap the texture to whole 4 m window bays on every face), and roofs with cornices
+const walls = [OFFICE, GLASS, BRICK].map(() => ({ pos: [], nor: [], uv: [], col: [], bays: true }));
 const roof = { pos: [], nor: [], uv: [], col: [] };
 const towers = [];
 const parks = [];
@@ -277,7 +383,8 @@ const CELL_TEX = 32; // metres covered by one facade texture repeat
 
 function face(B, o, U, V, color, uo, vo) {
   const n = new V3().crossVectors(U, V).normalize();
-  const ul = U.length() / CELL_TEX, vl = V.length() / CELL_TEX;
+  // a facade spans a whole number of bays (stretched by at most 2 m over its width), so corners never cut a window
+  const ul = (B.bays ? Math.max(1, Math.round(U.length() / (CELL_TEX / 8))) / 8 : U.length() / CELL_TEX), vl = V.length() / CELL_TEX;
   const p = [o, o.clone().add(U), o.clone().add(U).add(V), o.clone().add(V)];
   const t = [[uo, vo], [uo + ul, vo], [uo + ul, vo + vl], [uo, vo + vl]];
   for (const i of [0, 1, 2, 0, 2, 3]) {
@@ -297,34 +404,43 @@ function boxFaces(B, x0, y0, z0, x1, y1, z1, color, uo, withRoof, roofColor) {
 }
 
 const TINTS = ['#e3d6c3', '#c9c6c0', '#b98a74', '#a9bcd2', '#d8cbb5', '#8d9aa8', '#c49a7c', '#dcc9a6', '#9fb0a0'].map(c => new THREE.Color(c));
-const LEDGE = new THREE.Color('#8b857c');
+const LEDGE = new THREE.Color('#8b857c'), PALE = new THREE.Color('#e6ebf0');
+// roof finishes: pale and dark gravel, tar, weathered green, warm membrane (multiplied with the gravel texture)
+const ROOFS = ['#d8d2c8', '#b9b5ae', '#8f8b86', '#a9b5aa', '#c9b7a6', '#9e9a96'].map(c => new THREE.Color(c));
+// deterministic 0..1 from a position, for looks only (the city's rnd() sequence must not change)
+const hash2 = (x, z) => { const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return s - Math.floor(s); };
 
-function addTier(x0, z0, x1, z1, y0, y1, tint, uo) {
+function addTier(x0, z0, x1, z1, y0, y1, tint, uo, style) {
   boxes.push({ minX: x0, maxX: x1, minY: y0, maxY: y1, minZ: z0, maxZ: z1, q: 0 });
-  boxFaces(wall, x0, y0, z0, x1, y1, z1, tint, uo, false);
-  // cornice ledge; its top is the visible roof and sits flush with the collision top so feet rest on it
-  const m = 0.6;
-  boxFaces(roof, x0 - m, y1 - 1.05, z0 - m, x1 + m, y1, z1 + m, LEDGE, 0, true, LEDGE);
+  // brick and glass carry their own colour; the building's tint only nudges them
+  const col = style === OFFICE ? tint : tint.clone().lerp(PALE, 0.6);
+  boxFaces(walls[style], x0, y0, z0, x1, y1, z1, col, uo, false);
+  // cornice ledge in a darker shade of the building; its top is the visible roof and sits flush with the collision
+  // top so feet rest on it
+  const m = 0.6, trim = (style === BRICK ? LEDGE : tint).clone().multiplyScalar(0.78);
+  boxFaces(roof, x0 - m, y1 - 1.05, z0 - m, x1 + m, y1, z1 + m, trim, 0, true, ROOFS[(hash2(x0, z0) * ROOFS.length) | 0]);
 }
 
 function addBuilding(x0, z0, x1, z1, h) {
   const tint = TINTS[(rnd() * TINTS.length) | 0];
   const uo = Math.floor(rnd() * 8) / 8;
   const w = x1 - x0, d = z1 - z0;
+  // downtown towers are mostly glass, low blocks mostly brick
+  const r = hash2(x1, z1), style = h > 110 ? (r < 0.7 ? GLASS : OFFICE) : h > 60 ? (r < 0.3 ? GLASS : r < 0.85 ? OFFICE : BRICK) : (r < 0.55 ? BRICK : OFFICE);
   if (h > 55 && rnd() < 0.6) {
     const h1 = h * (0.45 + rnd() * 0.2);
-    addTier(x0, z0, x1, z1, 0, h1, tint, uo);
+    addTier(x0, z0, x1, z1, 0, h1, tint, uo, style);
     const ix = w * (0.12 + rnd() * 0.12), iz = d * (0.12 + rnd() * 0.12);
     if (h > 120 && rnd() < 0.6) {
       const h2 = lerp(h1, h, 0.6);
-      addTier(x0 + ix, z0 + iz, x1 - ix, z1 - iz, h1, h2, tint, uo);
+      addTier(x0 + ix, z0 + iz, x1 - ix, z1 - iz, h1, h2, tint, uo, style);
       const jx = ix + (w - 2 * ix) * 0.15, jz = iz + (d - 2 * iz) * 0.15;
-      addTier(x0 + jx, z0 + jz, x1 - jx, z1 - jz, h2, h, tint, uo);
+      addTier(x0 + jx, z0 + jz, x1 - jx, z1 - jz, h2, h, tint, uo, style);
     } else {
-      addTier(x0 + ix, z0 + iz, x1 - ix, z1 - iz, h1, h, tint, uo);
+      addTier(x0 + ix, z0 + iz, x1 - ix, z1 - iz, h1, h, tint, uo, style);
     }
   } else {
-    addTier(x0, z0, x1, z1, 0, h, tint, uo);
+    addTier(x0, z0, x1, z1, 0, h, tint, uo, style);
     if (h < 60 && w > 16 && d > 16 && rnd() < 0.45) towers.push(new V3(lerp(x0 + 5, x1 - 5, rnd()), h, lerp(z0 + 5, z1 - 5, rnd())));
   }
 }
@@ -334,10 +450,10 @@ for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
   const X0 = bx + BLOCK_MIN, X1 = bx + BLOCK_MAX, Z0 = bz + BLOCK_MIN, Z1 = bz + BLOCK_MAX;
   if (i === 5 && j === 5) {
     // landmark tower
-    addTier(X0 + 5, Z0 + 5, X1 - 5, Z1 - 5, 0, 95, TINTS[0], 0);
-    addTier(X0 + 13, Z0 + 13, X1 - 13, Z1 - 13, 95, 210, TINTS[0], 0.25);
-    addTier(X0 + 22, Z0 + 22, X1 - 22, Z1 - 22, 210, 290, TINTS[0], 0.5);
-    addTier(X0 + 30, Z0 + 30, X1 - 30, Z1 - 30, 290, 312, TINTS[5], 0.5);
+    addTier(X0 + 5, Z0 + 5, X1 - 5, Z1 - 5, 0, 95, TINTS[0], 0, OFFICE);
+    addTier(X0 + 13, Z0 + 13, X1 - 13, Z1 - 13, 95, 210, TINTS[3], 0.25, GLASS);
+    addTier(X0 + 22, Z0 + 22, X1 - 22, Z1 - 22, 210, 290, TINTS[3], 0.5, GLASS);
+    addTier(X0 + 30, Z0 + 30, X1 - 30, Z1 - 30, 290, 312, TINTS[5], 0.5, OFFICE);
     boxes.push({ minX: bx + 44, maxX: bx + 46, minY: 312, maxY: 360, minZ: bz + 44, maxZ: bz + 46, q: 0 });
     boxFaces(roof, bx + 44, 312, bz + 44, bx + 46, 360, bz + 46, LEDGE, 0, true, LEDGE);
     continue;
@@ -369,12 +485,14 @@ function mergedMesh(B, mat) {
   m.castShadow = true; m.receiveShadow = true;
   return m;
 }
-const facade = facadeTextures();
-scene.add(mergedMesh(wall, new THREE.MeshStandardMaterial({
-  map: facade.map, emissiveMap: facade.emissive, emissive: new THREE.Color('#ffffff'), emissiveIntensity: 0.55,
-  vertexColors: true, roughness: 0.62, metalness: 0.15
-})));
-scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 })));
+walls.forEach((B, style) => {
+  const t = facadeTextures(style);
+  scene.add(mergedMesh(B, new THREE.MeshStandardMaterial({
+    map: t.map, emissiveMap: t.emissive, emissive: new THREE.Color('#ffffff'), emissiveIntensity: 0.85,
+    roughnessMap: t.rm, metalnessMap: t.rm, roughness: 1, metalness: 1, vertexColors: true
+  })));
+});
+scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ map: roofTexture(), vertexColors: true, roughness: 0.95 })));
 
 // water towers
 {
@@ -397,19 +515,22 @@ scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ vertexColors: true, 
   const water = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), new THREE.MeshStandardMaterial({ color: '#3c5a73', roughness: 0.25, metalness: 0.4 }));
   water.rotation.x = -Math.PI / 2; water.position.y = -0.6; scene.add(water);
   const grass = new THREE.MeshStandardMaterial({ color: '#5f8a4a', roughness: 1 });
-  const treeMat = new THREE.MeshStandardMaterial({ color: '#4c7a3a', roughness: 1 });
-  const trunkMat = new THREE.MeshStandardMaterial({ color: '#5a4030', roughness: 1 });
+  // trees: two instanced meshes for every park (crowns and trunks), so a wide shadow map stays cheap
+  const nTrees = parks.length * 14;
+  const crowns = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(3.2, 0), new THREE.MeshStandardMaterial({ color: '#4c7a3a', roughness: 1, flatShading: true }), nTrees);
+  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.45, 4, 6), new THREE.MeshStandardMaterial({ color: '#5a4030', roughness: 1 }), nTrees);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), at = new V3(), sc = new V3();
+  let n = 0;
   for (const [x0, z0, x1, z1] of parks) {
     const g = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.3, z1 - z0), grass);
     g.position.set((x0 + x1) / 2, 0.15, (z0 + z1) / 2); g.receiveShadow = true; scene.add(g);
-    for (let t = 0; t < 14; t++) {
+    for (let t = 0; t < 14; t++, n++) {
       const x = lerp(x0 + 4, x1 - 4, rnd()), z = lerp(z0 + 4, z1 - 4, rnd()), s = 0.8 + rnd() * 0.6;
-      const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(3.2 * s, 0), treeMat);
-      crown.position.set(x, 6 * s, z); crown.castShadow = true; scene.add(crown);
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 4 * s, 6), trunkMat);
-      trunk.position.set(x, 2 * s, z); trunk.castShadow = true; scene.add(trunk);
+      crowns.setMatrixAt(n, m.compose(at.set(x, 6 * s, z), q, sc.set(s, s, s)));
+      trunks.setMatrixAt(n, m.compose(at.set(x, 2 * s, z), q, sc.set(1, s, 1)));
     }
   }
+  [crowns, trunks].forEach(o => { o.castShadow = true; o.receiveShadow = true; scene.add(o); });
 }
 
 // water towers collide too (4.8 m wide, so the roof filters for tokens and spawn skip them)
@@ -531,65 +652,168 @@ const tokens = [];
 $('tok-total').textContent = tokens.length;
 
 // ---------------------------------------------------------------- hero model
-const hero = new THREE.Group();
+// Rigid segments with rounded ends, so bent elbows and knees close up instead of cracking open. Each segment is one
+// merged, vertex-coloured mesh sharing the suit material. Web lines radiate from the face and from the chest and back
+// emblems (spheres with their poles there) and run as a grid along the limbs; white and black parts use a blank texel.
+const hero = new THREE.Group();   // at the collision sphere's centre, soles at -R; faces +z, and +x is the hero's left
 const joints = {};
+const SHOULDER_X = 0.265, SHOULDER_Y = 0.455;
 {
-  const red = new THREE.MeshStandardMaterial({ color: '#c8121f', roughness: 0.45, metalness: 0.05, map: webTexture() });
-  const blue = new THREE.MeshStandardMaterial({ color: '#1c2f86', roughness: 0.5 });
-  const black = new THREE.MeshStandardMaterial({ color: '#111111', roughness: 0.6 });
-  const lens = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#d8e4ff', emissiveIntensity: 0.35, roughness: 0.2 });
-  const add = (geo, mat, x, y, z, parent = hero) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
-  const chest = add(new THREE.CylinderGeometry(0.25, 0.17, 0.62, 16), red, 0, 0.24, 0);
-  chest.scale.z = 0.62;
-  for (const s of [-1, 1]) {
-    const side = add(new THREE.CylinderGeometry(0.06, 0.05, 0.5, 8), blue, s * 0.19, 0.2, 0);
-    side.scale.z = 1.4; side.rotation.z = s * 0.12;
-    const delt = add(new THREE.SphereGeometry(0.1, 12, 8), red, s * 0.29, 0.47, 0);
-    delt.scale.set(1, 0.9, 0.9);
+  const lin = c => new THREE.Color(c).convertSRGBToLinear();
+  const RED = lin('#d0121e'), BLUE = lin('#2445b8'), WHITE = lin('#f4f4f4'), BLACK = lin('#0c0c10');
+  const suit = new THREE.MeshStandardMaterial({ vertexColors: true, map: webTexture(), roughness: 0.5, metalness: 0.05 });
+  const lens = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#e4ecff', emissiveIntensity: 0.6, roughness: 0.2 });
+  const solid = g => (g.index ? g.toNonIndexed() : g);
+  // solid of revolution from y = 0 down to y = -len: radius r1 at the top, r2 at the bottom, hemispherical ends.
+  // Rings every 4 cm along the shaft keep colour edges (glove, boot) sharp instead of smeared down the whole limb.
+  function capsule(len, r1, r2) {
+    const pts = [], rings = Math.max(1, Math.round(len / 0.04));
+    for (let i = 0; i <= 4; i++) { const a = -Math.PI / 2 + i * Math.PI / 8; pts.push(new THREE.Vector2(Math.cos(a) * r2, -len + Math.sin(a) * r2)); }
+    for (let i = 1; i < rings; i++) pts.push(new THREE.Vector2(lerp(r2, r1, i / rings), -len + len * i / rings));
+    for (let i = 0; i <= 4; i++) { const a = i * Math.PI / 8; pts.push(new THREE.Vector2(Math.cos(a) * r1, Math.sin(a) * r1)); }
+    return solid(new THREE.LatheGeometry(pts, 14));
   }
-  const hips = add(new THREE.CylinderGeometry(0.18, 0.17, 0.24, 14), blue, 0, -0.1, 0);
-  hips.scale.z = 0.7;
-  add(new THREE.BoxGeometry(0.11, 0.1, 0.01), black, 0, 0.32, 0.145);
-  add(new THREE.CylinderGeometry(0.07, 0.08, 0.12, 8), red, 0, 0.6, 0);
-  const head = add(new THREE.SphereGeometry(0.165, 20, 14), red, 0, 0.77, 0);
-  head.scale.set(0.95, 1.12, 1);
-  for (const s of [-1, 1]) {
-    const rim = add(new THREE.SphereGeometry(0.065, 12, 8), black, s * 0.068, 0.8, 0.128);
-    rim.scale.set(1.15, 1.6, 0.35); rim.rotation.z = s * 0.55;
-    const eye = add(new THREE.SphereGeometry(0.055, 12, 8), lens, s * 0.068, 0.8, 0.138);
-    eye.scale.set(1, 1.5, 0.35); eye.rotation.z = s * 0.55;
+  // ellipsoid with radii (a, b, c), its poles facing +-z; `taper` widens x toward the top (and narrows it below the middle)
+  function blob(x, y, z, a, b, c, taper = 0, rz = 0, ry = 0) {
+    const g = new THREE.SphereGeometry(1, 20, 14).rotateX(Math.PI / 2);
+    g.scale(a, b, c);
+    if (taper) {
+      const ps = g.attributes.position;
+      for (let i = 0; i < ps.count; i++) { const k = 1 + taper * ps.getY(i) / b; ps.setX(i, ps.getX(i) * k); ps.setZ(i, ps.getZ(i) * (1 + 0.3 * (k - 1))); }
+      g.computeVertexNormals();
+    }
+    return solid(g.rotateZ(rz).rotateY(ry).translate(x, y, z));
   }
-  const limb = (x, y, l1, l2, m1, m2, r) => {
-    const j1 = new THREE.Group(); j1.position.set(x, y, 0); hero.add(j1);
-    add(new THREE.CylinderGeometry(r, r * 0.85, l1, 8), m1, 0, -l1 / 2, 0, j1);
+  // thin bar from a to b (spider emblem legs)
+  function bar(a, b, w) {
+    const d = new V3().subVectors(b, a), g = new THREE.BoxGeometry(w, d.length(), w * 0.7);
+    g.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), d.normalize())));
+    return solid(g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2));
+  }
+  const red = () => RED, blue = () => BLUE, white = () => WHITE, black = () => BLACK;
+  const uvOut = { u: 0.5, v: 0.5 };
+  const sphereUV = (cu, cv) => (pt, u, v) => { uvOut.u = u * cu; uvOut.v = v * cv; };   // lines radiate from the poles
+  const limbUV = (pt, u) => { uvOut.u = u * 7; uvOut.v = -pt.y / 0.065; };                // a grid along the limb
+  const P = new V3(), Nm = new V3();
+  // one mesh from parts [geometry, paint(position, normal) -> colour, uv(position, u, v) or none for a blank texel]
+  function segment(parent, parts, mat = suit) {
+    let n = 0;
+    for (const [g] of parts) n += g.attributes.position.count;
+    const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2), col = new Float32Array(n * 3);
+    let o = 0;
+    for (const [g, paint, uvf] of parts) {
+      const gp = g.attributes.position, gn = g.attributes.normal, gu = g.attributes.uv;
+      for (let i = 0; i < gp.count; i++, o++) {
+        P.fromBufferAttribute(gp, i); Nm.fromBufferAttribute(gn, i);
+        uvOut.u = uvOut.v = 0.5;
+        if (uvf) uvf(P, gu.getX(i), gu.getY(i));
+        P.toArray(pos, o * 3); Nm.toArray(nor, o * 3); paint(P, Nm).toArray(col, o * 3);
+        uv[o * 2] = uvOut.u; uv[o * 2 + 1] = uvOut.v;
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.computeBoundingSphere();
+    const m = new THREE.Mesh(geo, mat);
+    m.castShadow = m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  }
+  // torso: one tapered ellipsoid, wide at the shoulders; blue down the sides below the armpits
+  const TY = 0.22, TA = 0.2, TB = 0.3, TC = 0.125, TT = 0.34;
+  const torsoZ = (x, y) => {   // depth of the torso's front surface at (x, y)
+    const k = 1 + TT * (y - TY) / TB, a = TA * k, c = TC * (1 + 0.3 * (k - 1));
+    return c * Math.sqrt(Math.max(0, 1 - (x / a) ** 2 - ((y - TY) / TB) ** 2));
+  };
+  // spider emblem on the chest (s = 1) or the back (s = -1), drawn on the torso's surface
+  function emblem(s, y0, k) {
+    const at = (x, y) => new V3(x * k, y0 + y * k, s * (torsoZ(x * k, y0 + y * k) + 0.004));
+    const parts = [[blob(0, y0 - 0.005 * k, s * (torsoZ(0, y0) + 0.004), 0.017 * k, 0.034 * k, 0.008), white],
+      [blob(0, y0 + 0.042 * k, s * (torsoZ(0, y0 + 0.042 * k) + 0.004), 0.012 * k, 0.014 * k, 0.007), white]];
+    const legs = [[[0.012, 0.02], [0.05, 0.062], [0.058, 0.118]], [[0.014, 0.008], [0.068, 0.03], [0.098, 0.068]],
+      [[0.014, -0.006], [0.068, -0.028], [0.098, -0.075]], [[0.012, -0.02], [0.048, -0.066], [0.054, -0.128]]];
+    for (const m of [1, -1]) for (const [a, b, c] of legs) {
+      parts.push([bar(at(m * a[0], a[1]), at(m * b[0], b[1]), 0.007 * k), white]);
+      parts.push([bar(at(m * b[0], b[1]), at(m * c[0], c[1]), 0.006 * k), white]);
+    }
+    return parts;
+  }
+  const spine = new THREE.Group(); hero.add(spine);            // bends and twists the upper body about the waist
+  const head = new THREE.Group(); head.position.y = 0.64; spine.add(head);
+  segment(spine, [
+    [blob(0, TY, 0, TA, TB, TC, TT), (pt, n) => (Math.abs(n.x) > 0.62 && pt.y < 0.42 ? BLUE : RED), sphereUV(20, 12)],
+    [capsule(0.13, 0.058, 0.066).translate(0, 0.66, 0.005), red, limbUV],
+    [blob(SHOULDER_X - 0.02, SHOULDER_Y, 0, 0.095, 0.092, 0.092), red, sphereUV(10, 6)],
+    [blob(-SHOULDER_X + 0.02, SHOULDER_Y, 0, 0.095, 0.092, 0.092), red, sphereUV(10, 6)],
+    ...emblem(1, 0.33, 1), ...emblem(-1, 0.31, 1.35)
+  ]);
+  segment(hero, [[blob(0, -0.1, 0, 0.172, 0.125, 0.115), blue, sphereUV(14, 8)]]);
+  // head: red mask with web lines radiating from the face; big white lenses in black rims
+  segment(head, [
+    [blob(0, 0.15, 0.012, 0.113, 0.143, 0.127, 0.12), red, sphereUV(18, 11)],
+    [blob(0.05, 0.168, 0.118, 0.05, 0.068, 0.026, 0, -0.5, 0.38), black],
+    [blob(-0.05, 0.168, 0.118, 0.05, 0.068, 0.026, 0, 0.5, -0.38), black]
+  ]);
+  segment(head, [
+    [blob(0.05, 0.168, 0.125, 0.041, 0.057, 0.022, 0, -0.5, 0.38), white],
+    [blob(-0.05, 0.168, 0.125, 0.041, 0.057, 0.022, 0, 0.5, -0.38), white]
+  ], lens);
+  const limb = (parent, x, y, l1, upper, l2, lower, endY, endZ) => {
+    const j1 = new THREE.Group(); j1.position.set(x, y, 0); parent.add(j1);
+    segment(j1, upper);
     const j2 = new THREE.Group(); j2.position.y = -l1; j1.add(j2);
-    add(new THREE.CylinderGeometry(r * 0.85, r * 0.7, l2, 8), m2, 0, -l2 / 2, 0, j2);
-    const end = new THREE.Object3D(); end.position.y = -l2; j2.add(end);
+    segment(j2, lower);
+    const end = new THREE.Object3D(); end.position.set(0, endY, endZ); j2.add(end);
     return { j1, j2, end };
   };
-  joints.armL = limb(0.3, 0.48, 0.3, 0.3, red, red, 0.065);
-  joints.armR = limb(-0.3, 0.48, 0.3, 0.3, red, red, 0.065);
-  joints.legL = limb(0.11, -0.2, 0.42, 0.38, blue, red, 0.085);
-  joints.legR = limb(-0.11, -0.2, 0.42, 0.38, blue, red, 0.085);
+  // arms: red on the front, blue behind, red gloves; the elbow is the forearm's rounded top
+  const arm = s => limb(spine, s * SHOULDER_X, SHOULDER_Y, 0.29,
+    [[capsule(0.29, 0.075, 0.062), (pt, n) => (n.z > 0.1 || pt.y > -0.07 ? RED : BLUE), limbUV]],
+    0.26, [[capsule(0.26, 0.062, 0.05), (pt, n) => (n.z > 0.1 || pt.y < -0.13 ? RED : BLUE), limbUV],
+      [blob(0, -0.3, 0.005, 0.054, 0.066, 0.058), red, sphereUV(8, 5)]], -0.31, 0.01);
+  joints.armL = arm(1); joints.armR = arm(-1);
+  // legs: blue, red boots from below the knee; the sole sits at -R with the leg straight
+  const leg = s => limb(hero, s * 0.105, -0.15, 0.42,
+    [[capsule(0.42, 0.1, 0.072), blue, limbUV]],
+    0.365, [[capsule(0.365, 0.072, 0.05), pt => (pt.y > -0.15 ? BLUE : RED), limbUV],
+      [capsule(0.22, 0.052, 0.046).rotateX(-Math.PI / 2).scale(1, 0.75, 1).translate(0, -0.396, -0.06), red, limbUV]], -0.435, 0.05);
+  joints.legL = leg(1); joints.legR = leg(-1);
+  joints.spine = spine; joints.head = head;
 }
 scene.add(hero);
 
-// webs: thin cylinders stretched between two points
-const webMat = new THREE.MeshBasicMaterial({ color: '#f2f2f2' });
-const webGeo = new THREE.CylinderGeometry(0.035, 0.035, 1, 5, 1, true);
+// webs: unit-radius cylinders stretched between two points. The shader widens the strand with distance so it never
+// gets thinner than about 2.6 px on screen (3.5 cm thick close up); unlit and untoned, so it stays bright white.
+const webGeo = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
 webGeo.translate(0, 0.5, 0);
+const webMat = new THREE.ShaderMaterial({
+  uniforms: { r0: { value: 0.035 }, px: { value: 0.002 } },
+  vertexShader: `uniform float r0, px; varying float vLit;
+    void main() {
+      vec4 axis = modelViewMatrix * vec4(0.0, position.y, 0.0, 1.0);
+      float r = max(r0, -axis.z * px);
+      vLit = abs(normalize(normalMatrix * normal).z);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position.x * r, position.y, position.z * r, 1.0);
+    }`,
+  fragmentShader: 'varying float vLit; void main() { gl_FragColor = vec4(vec3(1.0, 0.98, 0.95) * (0.8 + 0.2 * vLit), 1.0); }'
+});
 const webs = [new THREE.Mesh(webGeo, webMat), new THREE.Mesh(webGeo, webMat)];
 webs.forEach(w => { w.visible = false; w.frustumCulled = false; scene.add(w); });
-const UP = new V3(0, 1, 0);
+const webRadius = depth => Math.max(webMat.uniforms.r0.value, depth * webMat.uniforms.px.value);
+const UP = new V3(0, 1, 0), webDir = new V3();
 function placeWeb(w, a, b) {
-  const d = new V3().subVectors(b, a), len = d.length();
+  const len = webDir.subVectors(b, a).length();
   if (len < 0.01) { w.visible = false; return; }
   w.visible = true;
   w.position.copy(a);
-  w.quaternion.setFromUnitVectors(UP, d.multiplyScalar(1 / len));
+  w.quaternion.setFromUnitVectors(UP, webDir.multiplyScalar(1 / len));
   w.scale.set(1, len, 1);
 }
-const zipMarker = new THREE.Mesh(new THREE.RingGeometry(0.7, 1, 24), new THREE.MeshBasicMaterial({ color: '#ffc35a', transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide }));
+// zip marker: a ring on a ledge a zip would launch from. Depth-tested, so the hero and buildings in front hide it.
+const zipMarker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 32), new THREE.MeshBasicMaterial({ color: '#ffc35a', transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, fog: false }));
 zipMarker.renderOrder = 10; zipMarker.visible = false; scene.add(zipMarker);
 
 // ---------------------------------------------------------------- player state
@@ -608,34 +832,38 @@ const p = {
   travel: new V3(0, 0, 1),  // intended direction while swinging: steers anchors and the assist
   onGround: false, wallN: null, wallHit: 0, wallBox: null, wallRun: null, wallCool: 0, jumpN: new V3(),
   web: null, zip: null, reattach: 0, runPhase: 0, runTime: 0,
-  airZips: 2, zipFx: 0, zipFxPoint: new V3(), releaseAt: -9, releaseTheta: 0, perchAt: -9, perchSpeed: 0, webAt: -9
+  airZips: 2, zipFx: 0, zipFxPoint: new V3(), releaseAt: -9, releaseTheta: 0, perchAt: -9, perchSpeed: 0,
+  webAt: -9,                // simTime of the last web attach, for camera and sound effects
+  trickAt: -9, trickPerfect: false   // simTime of the last swing jump or point launch, for the hero's flips
 };
 const drawPos = new V3();   // p.pos interpolated between physics steps, for rendering
 let simTime = 0, simAcc = 0, jumpBuf = 0, jumpAt = -9, zipBuf = 0, swingTap = false, swingWas = false;
-const cam = { yaw: 0, pitch: 0.1, dist: 7, fov: 68, target: new V3() };
+// chase camera state. target: the point the camera frames (the hero's chest plus the speed lag); curD: camera distance
+// after collision; snap: skip smoothing on the next frame (after a teleport or the title screen)
+const cam = { yaw: 0, pitch: 0.1, dist: 7, fov: 66, target: new V3(), curD: 7, free: 7, snap: true };
 function teleport(pos, vel, yaw, pitch = 0.12) {
   p.pos.copy(pos); p.prev.copy(pos); drawPos.copy(pos); p.vel.copy(vel);
   p.web = p.zip = p.wallRun = p.wallN = p.wallBox = null;
-  p.onGround = false; p.reattach = p.wallCool = p.zipFx = 0; p.airZips = 2;
+  p.onGround = false; p.reattach = p.wallCool = p.zipFx = p.runTime = 0; p.airZips = 2;
   p.releaseAt = p.perchAt = p.webAt = -9;
   jumpBuf = zipBuf = simAcc = 0; swingTap = false;
   p.travel.set(Math.sin(yaw), 0, Math.cos(yaw)); p.heading.copy(p.travel);
-  cam.yaw = yaw; cam.pitch = pitch;
-  cam.target.copy(pos); cam.target.y += 1.3;
+  cam.yaw = yaw; cam.pitch = pitch; cam.snap = true;
+  cam.target.copy(pos); cam.target.y += 0.2;
 }
-// Start on a mid-height roof (open sky above it) near (200, 200), at the edge that faces the landmark, looking down
-// the street: holding swing from there leaps straight into a swing chain toward downtown.
+// Start on a mid-height roof (open sky above it) near (200, 200), at its corner nearest the landmark, looking down the
+// street beside that edge: holding swing from there leaps into a swing chain toward downtown.
 function spawn() {
   const tower = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45);
   const covered = b => boxes.some(o => o !== b && !o.prop && o.minY >= b.maxY - 0.01 && o.minX < b.maxX && o.maxX > b.minX && o.minZ < b.maxZ && o.maxZ > b.minZ);
   const score = b => Math.hypot((b.minX + b.maxX) / 2 - 200, (b.minZ + b.maxZ) / 2 - 200);
   const b = boxes.filter(o => !o.prop && o.maxY > 30 && o.maxY < 60 && o.maxX - o.minX > 12 && o.maxZ - o.minZ > 12 && !covered(o))
     .sort((a, c) => score(a) - score(c))[0];
-  const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2, tx = tower.x - cx, tz = tower.z - cz;
-  const alongX = Math.abs(tx) > Math.abs(tz), sx = Math.sign(tx), sz = Math.sign(tz);
-  const at = new V3(alongX ? (sx > 0 ? b.maxX : b.minX) - sx * 1.5 : cx, b.maxY + R + 0.02, alongX ? cz : (sz > 0 ? b.maxZ : b.minZ) - sz * 1.5);
-  if (sphereHits(at, R)) at.set(cx, b.maxY + R + 0.02, cz);   // a water tower on that edge
-  teleport(at, new V3(), alongX ? Math.atan2(sx, 0) : Math.atan2(0, sz), 0.05);
+  const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2, sx = Math.sign(tower.x - cx), sz = Math.sign(tower.z - cz);
+  const at = new V3(sx > 0 ? b.maxX - 1.5 : b.minX + 1.5, b.maxY + R + 0.02, sz > 0 ? b.maxZ - 1.5 : b.minZ + 1.5);
+  if (sphereHits(at, R)) at.set(cx, b.maxY + R + 0.02, cz);   // a water tower stands there
+  // look along x toward the landmark, turned a little toward the street on the landmark's side
+  teleport(at, new V3(), Math.atan2(sx, 0.35 * sz), 0.05);
 }
 
 // ---------------------------------------------------------------- input
@@ -673,6 +901,8 @@ let hadLock = false, lockFailed = false;
 addEventListener('mousemove', e => {
   if (state !== 'play' || isTouch) return;
   if (!document.pointerLockElement && !lockFailed) return;
+  // Chrome can report the cursor's jump to the lock point as one huge movement: no hand moves 250 px in one event
+  if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
   input.lookX += e.movementX || 0; input.lookY += e.movementY || 0;
 });
 function lockPointer() {
@@ -1007,6 +1237,7 @@ function swingJump(theta) {
   p.vel.addScaledVector(h, 6 + 10 * q);
   p.reattach = 0.45; p.airZips = 2;
   const perfect = q > 0.8;
+  p.trickAt = simTime; p.trickPerfect = perfect;
   thwip(perfect ? 0.75 : 0.6);
   showToast(perfect ? 'PERFECT SWING JUMP' : 'SWING JUMP');
 }
@@ -1094,6 +1325,7 @@ function pointLaunch(speed, perfect) {
   p.vel.copy(camF).multiplyScalar(Math.max(18, speed * 0.4) * k);
   p.vel.y = 24 * k;
   p.onGround = false; p.perchAt = -9; p.wallCool = 0.3; p.jumpN.set(0, 0, 0); jumpBuf = 0; p.airZips = 2;
+  if (perfect) { p.trickAt = simTime; p.trickPerfect = true; }
   thwip(0.7);
   showToast(perfect ? 'PERFECT LAUNCH' : 'POINT LAUNCH');
 }
@@ -1345,146 +1577,512 @@ $('start-btn').addEventListener('click', start);
 $('resume-btn').addEventListener('click', resume);
 
 // ---------------------------------------------------------------- animation
-const tq = new THREE.Quaternion(), tm = new THREE.Matrix4();
-function orientHero(up, fwd, k) {
-  const z = fwd.clone().addScaledVector(up, -fwd.dot(up));
-  if (z.lengthSq() < 1e-4) z.copy(p.heading).addScaledVector(up, -p.heading.dot(up));
-  if (z.lengthSq() < 1e-4) z.set(0, 0, 1);
-  z.normalize();
-  const x = new V3().crossVectors(up, z).normalize();
-  z.crossVectors(x, up);
-  tm.makeBasis(x, up, z);
-  tq.setFromRotationMatrix(tm);
-  hero.quaternion.slerp(tq, k);
+// The body turns toward a target orientation at a capped rate (smoothly, never snapping round), and every joint eases
+// toward a pose built from the movement: the phase of the swing arc, vertical speed in the air, speed on the ground
+// and on walls. Pose channels: per limb (armL, armR, legL, legR) the shoulder or hip swing (x, negative = forward),
+// spread (z, positive = toward +x) and elbow or knee bend; then spine bend / twist / lean and head nod.
+const LIMBS = [joints.armL, joints.armR, joints.legL, joints.legR];
+const SPINE = 12, HEAD = 15, NCH = 16;
+const pose = new Float32Array(NCH), goal = new Float32Array(NCH), chRate = new Float32Array(NCH);
+const MAX_TURN = 10;   // rad/s: the fastest the body itself turns
+const heroBase = new THREE.Quaternion(), heroInv = new THREE.Quaternion(), trickQ = new THREE.Quaternion(), tq = new THREE.Quaternion();
+const tm = new THREE.Matrix4(), aUp = new V3(), aFwd = new V3(), bx = new V3(), bz = new V3(), av = new V3(), aw = new V3();
+const palmL = new V3(), palmR = new V3(), soleA = new V3(), soleB = new V3(), relAnchor = new V3(), TRICK_AXES = [new V3(1, 0, 0), new V3(0, 1, 0)];
+const anim = { dive: false, cling: 0, land: 0, airVy: 0, grounded: false, spins: 0, webAt: -9, webHand: 1, trick: -1, trickT: 0, trickAt: -9, plant: 0, relT: 9 };
+
+function limbGoal(i, x, z, bend) { goal[i * 3] = x; goal[i * 3 + 1] = z; goal[i * 3 + 2] = bend; }
+// blend the goal toward another pose (written by fn) by k
+const goalB = new Float32Array(NCH);
+function blendGoal(fn, k) {
+  if (k <= 0.001) return;
+  goalB.set(goal); fn();
+  for (let i = 0; i < NCH; i++) goal[i] = lerp(goalB[i], goal[i], k);
 }
-function setJ(j, x, z, x2, k) {
-  k = Math.min(1, k);
-  j.j1.rotation.x = lerp(j.j1.rotation.x, x, k);
-  j.j1.rotation.z = lerp(j.j1.rotation.z, z, k);
-  j.j2.rotation.x = lerp(j.j2.rotation.x, x2, k);
+// point limb i (an arm) at world point pt, from the hero's current orientation
+function aimArm(i, pt, rate) {
+  av.set(i === 0 ? SHOULDER_X : -SHOULDER_X, SHOULDER_Y, 0).applyQuaternion(heroBase).add(drawPos);
+  av.subVectors(pt, av).applyQuaternion(heroInv);
+  const l = av.length();
+  if (l < 1e-3) return;
+  av.multiplyScalar(1 / l);
+  limbGoal(i, Math.atan2(-av.z, -av.y) - goal[SPINE], Math.asin(clamp(av.x, -1, 1)), -0.12);
+  chRate[i * 3] = chRate[i * 3 + 1] = rate;
 }
-const handR = new V3(), handL = new V3();
+function poseIdle() {
+  const b = Math.sin(clock * 2) * 0.03;
+  limbGoal(0, 0.06, 0.17 + b, -0.3); limbGoal(1, 0.06, -0.17 - b, -0.3);
+  limbGoal(2, -0.06, 0.06, 0.12); limbGoal(3, 0.05, -0.06, 0.1);
+  goal[SPINE] = 0.04 + b; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = -0.03;
+}
+function poseRun(ph, amp) {
+  const s = Math.sin(ph), c = Math.cos(ph);
+  limbGoal(2, s * amp, 0.04, Math.max(0, -c) * 1.4 * amp + 0.18);
+  limbGoal(3, -s * amp, -0.04, Math.max(0, c) * 1.4 * amp + 0.18);
+  limbGoal(0, -s * amp * 0.9, 0.14, -1.25); limbGoal(1, s * amp * 0.9, -0.14, -1.25);
+  goal[SPINE] = 0.12 * amp; goal[SPINE + 1] = s * 0.2 * amp; goal[SPINE + 2] = 0; goal[HEAD] = -0.1 * amp;
+}
+// ph: 0 dropping in, 0.5 the bottom of the arc, 1 the upswing. The web hand is aimed separately.
+function poseSwing(ph, hand) {
+  const free = 1 - hand, side = free === 0 ? 1 : -1;
+  const d = smoothstep(clamp(ph * 2.2, 0, 1)), u = smoothstep(clamp((ph - 0.5) * 2.5, 0, 1));
+  // free arm: reaching ahead on the drop, swept back through the bottom, up for the next web on the rise
+  limbGoal(free, lerp(lerp(-1.3, 0.75, d), -2.5, u), side * lerp(0.55, 0.3, u), lerp(-1.0, -0.35, d));
+  // legs (lead leg on the free side): trail behind on the drop, tuck through the bottom, kick ahead on the rise
+  const lead = free === 0 ? 2 : 3, back = 5 - lead, ls = lead === 2 ? 1 : -1;
+  limbGoal(lead, lerp(lerp(0.35, -1.45, d), -1.05, u), ls * 0.12, lerp(lerp(0.55, 2.1, d), 0.3, u));
+  limbGoal(back, lerp(lerp(0.6, -0.85, d), -0.35, u), -ls * 0.1, lerp(lerp(0.9, 1.7, d), 0.75, u));
+  goal[SPINE] = lerp(lerp(-0.18, 0.32, d), -0.05, u); goal[SPINE + 1] = 0; goal[SPINE + 2] = -side * 0.12; goal[HEAD] = lerp(0.1, -0.15, u);
+}
+// r: 1 rising, 0 falling. Rising tucks; falling reaches up and out (never arms straight out sideways)
+function poseAir(r) {
+  limbGoal(0, lerp(2.5, -0.9, r), lerp(0.55, 0.35, r), lerp(-0.35, -1.4, r));
+  limbGoal(1, lerp(2.2, -0.45, r), lerp(-0.7, -0.4, r), lerp(-0.55, -1.2, r));
+  limbGoal(2, lerp(-0.25, -1.3, r), 0.14, lerp(0.35, 1.9, r));
+  limbGoal(3, lerp(0.25, -0.5, r), -0.12, lerp(0.65, 1.25, r));
+  goal[SPINE] = lerp(-0.1, 0.22, r); goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = 0;
+}
+function poseTuck() {   // knees to the chest, for flips
+  limbGoal(0, -0.7, 0.3, -1.9); limbGoal(1, -0.7, -0.3, -1.9);
+  limbGoal(2, -2.1, 0.12, 2.4); limbGoal(3, -2.0, -0.12, 2.4);
+  goal[SPINE] = 0.45; goal[HEAD] = 0.3;
+}
+function poseDive() {   // head first, arms swept back along the body, legs together
+  limbGoal(0, 0.45, 0.2, -0.12); limbGoal(1, 0.45, -0.2, -0.12);
+  limbGoal(2, 0.08, 0.05, 0.22); limbGoal(3, 0.16, -0.05, 0.38);
+  goal[SPINE] = -0.12; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = -0.55;
+}
+function poseZip() {
+  limbGoal(2, 0.35, 0.1, 0.9); limbGoal(3, 0.6, -0.1, 1.1);
+  goal[SPINE] = -0.1; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = 0;
+}
+function poseCling() {  // flat on the wall (he faces it): hands up and out on it, knees bent out to the sides
+  limbGoal(0, -2.75, 0.75, -0.9); limbGoal(1, -2.5, -0.85, -1.0);
+  limbGoal(2, -1.1, 0.8, 1.7); limbGoal(3, -0.8, -0.75, 1.5);
+  goal[SPINE] = 0.05; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = -0.35;
+}
+function poseLand() {   // superhero landing: deep crouch, one hand down
+  limbGoal(0, -0.35, 0.25, -0.15); limbGoal(1, 0.8, -0.55, -0.4);
+  limbGoal(2, -1.45, 0.22, 2.3); limbGoal(3, -0.35, -0.12, 2.1);
+  goal[SPINE] = 0.55; goal[SPINE + 1] = 0.15; goal[SPINE + 2] = 0; goal[HEAD] = -0.4;
+}
+// swing phase from the rope's angle past the bottom of the arc along the direction of travel
+function swingPhase(w) {
+  const h = Math.hypot(p.vel.x, p.vel.z);
+  const dx = h > 2 ? p.vel.x / h : p.travel.x, dz = h > 2 ? p.vel.z / h : p.travel.z;
+  const ahead = (drawPos.x - w.pivot.x) * dx + (drawPos.z - w.pivot.z) * dz;
+  return clamp(0.5 + Math.atan2(ahead, Math.max(0.5, w.pivot.y - drawPos.y)) / 1.7, 0, 1);
+}
+// seconds until the current velocity runs into a building or the street
+function impactTime() {
+  const s = p.vel.length();
+  if (s < 1) return Infinity;
+  aw.copy(p.vel).multiplyScalar(1 / s);
+  const hit = raycast(p.pos, aw, 400);
+  const t = hit ? hit.t / s : Infinity;
+  return p.vel.y < 0 ? Math.min(t, (p.pos.y - R) / -p.vel.y) : t;
+}
+// orientation with +y along `up` (unit) and +z (the chest) as near `fwd` as possible. A little of the current facing
+// is mixed in, so a forward that runs nearly along `up` can't spin the body round its long axis.
+function basisQuat(up, fwd, out) {
+  av.copy(fwd);
+  const l = av.length();
+  if (l > 1e-6) av.multiplyScalar(1 / l);
+  bz.set(0, 0, 1).applyQuaternion(heroBase);
+  bz.multiplyScalar(0.08).add(av).addScaledVector(up, -bz.dot(up));
+  if (bz.lengthSq() < 1e-6) bz.set(0, 1, 0).applyQuaternion(heroBase).addScaledVector(up, -bz.dot(up));
+  bz.normalize();
+  bx.crossVectors(up, bz);
+  tm.makeBasis(bx, up, bz);
+  return out.setFromRotationMatrix(tm);
+}
 function animateHero(dt) {
-  const k = 1 - Math.exp(-dt * 14);
-  const hv = new V3(p.vel.x, 0, p.vel.z), hs = hv.length();
-  if (hs > 1) p.heading.lerp(hv.multiplyScalar(1 / hs), 1 - Math.exp(-dt * 10)).normalize();
-  const { armL, armR, legL, legR } = joints;
-  let up = UP.clone(), fwd = p.heading.clone();
+  const hs = Math.hypot(p.vel.x, p.vel.z), speed = p.vel.length();
+  if (hs > 1) {
+    const k = 1 - Math.exp(-dt * 10), hx = p.heading.x + (p.vel.x / hs - p.heading.x) * k, hz = p.heading.z + (p.vel.z / hs - p.heading.z) * k, hl = Math.hypot(hx, hz);
+    if (hl > 1e-3) p.heading.set(hx / hl, 0, hz / hl);
+  }
+  heroInv.copy(heroBase).invert();
+  chRate.fill(8);
+  aUp.copy(UP); aFwd.copy(p.heading);
+  const air = !p.web && !p.zip && !p.wallRun && !p.onGround;
+  // the dive pose only while actually diving, and only with time to hold it: it starts with over 0.7 s of fall left
+  // and ends 0.4 s out, so the hero lands on his feet
+  anim.dive = air && input.dive && p.vel.y < -6 && impactTime() > (anim.dive ? 0.4 : 0.7);
+  anim.cling += ((p.wallRun && speed < 1.5 ? 1 : 0) - anim.cling) * (1 - Math.exp(-dt * 8));
+  if (!p.onGround) anim.airVy = p.vel.y;
+  else if (anim.airVy < -18) { anim.land = clamp(-anim.airVy / 45, 0.45, 1); anim.airVy = 0; }
+  anim.land = Math.max(0, anim.land - dt * (hs > 6 || !p.onGround ? 6 : 2.2));
+  p.zipFx = Math.max(0, p.zipFx - dt);
 
   if (p.web) {
-    up = new V3().subVectors(p.web.anchor, p.pos).normalize();
-    fwd = p.vel.clone();
-    setJ(armR, Math.PI, -0.1, 0, k);
-    setJ(armL, -0.5, 1.0, -0.8, k);
-    setJ(legL, -1.0, 0.15, 1.6, k);
-    setJ(legR, 0.25, -0.1, 0.5, k);
+    const w = p.web;
+    if (p.webAt !== anim.webAt) {   // a new web: the hand on the anchor's side throws it
+      anim.webAt = p.webAt;
+      av.subVectors(w.anchor, drawPos).applyQuaternion(heroInv);
+      anim.webHand = av.x >= 0 ? 0 : 1;
+    }
+    // hang from the fulcrum, facing along the travel line (each new web resets it): a backswing swings backwards
+    // instead of turning round
+    aUp.subVectors(w.pivot, drawPos).normalize().addScaledVector(UP, 0.15).normalize();
+    const along = p.vel.x * p.travel.x + p.vel.z * p.travel.z;
+    aFwd.copy(p.vel);
+    if (along < 0) aFwd.addScaledVector(p.travel, -2 * along);   // mirror the backward part forward
+    aFwd.addScaledVector(p.travel, 4).addScaledVector(aw.set(0, 0, 1).applyQuaternion(heroBase), 2);
+    poseSwing(swingPhase(w), anim.webHand);
+    aimArm(anim.webHand, w.anchor, 20);
   } else if (p.zip) {
-    fwd = new V3().subVectors(p.zip.target, p.pos);
-    up = fwd.clone().normalize().lerp(UP, 0.4).normalize();
-    setJ(armR, Math.PI - 0.3, -0.2, 0, k);
-    setJ(armL, Math.PI - 0.3, 0.2, 0, k);
-    setJ(legL, 0.4, 0.1, 0.8, k);
-    setJ(legR, 0.6, -0.1, 0.9, k);
+    aFwd.subVectors(p.zip.target, drawPos);
+    aUp.copy(aFwd).normalize().lerp(UP, 0.4).normalize();
+    poseZip();
+    aimArm(0, p.zip.target, 20); aimArm(1, p.zip.target, 20);
   } else if (p.wallRun) {
-    up = p.wallRun.n.clone();
-    fwd = UP.clone();
-    p.runPhase += dt * 16;
-    const ph = p.runPhase;
-    setJ(legL, Math.sin(ph), 0, Math.max(0, -Math.cos(ph)) * 1.4 + 0.2, k * 2);
-    setJ(legR, Math.sin(ph + Math.PI), 0, Math.max(0, -Math.cos(ph + Math.PI)) * 1.4 + 0.2, k * 2);
-    setJ(armL, -Math.sin(ph) * 0.9, 0.2, -0.9, k * 2);
-    setJ(armR, -Math.sin(ph + Math.PI) * 0.9, -0.2, -0.9, k * 2);
+    const n = p.wallRun.n;
+    if (anim.cling > 0.5) { aFwd.copy(n).negate(); poseCling(); }
+    else {
+      // feet on the wall, chest toward where he runs
+      aUp.copy(n);
+      aFwd.copy(p.vel).addScaledVector(n, -p.vel.dot(n));
+      if (aFwd.lengthSq() < 1) aFwd.copy(UP);
+      p.runPhase += dt * (4 + speed * 0.6);
+      poseRun(p.runPhase, clamp(speed / 14, 0.5, 1.1));
+      chRate.fill(24, 0, 12);
+    }
   } else if (p.onGround) {
     if (hs > 0.8) {
       p.runPhase += dt * (4 + hs * 0.55);
-      const ph = p.runPhase, amp = clamp(hs / 14, 0.4, 1.1);
-      setJ(legL, Math.sin(ph) * amp, 0, Math.max(0, -Math.cos(ph)) * 1.3 * amp + 0.15, k * 2);
-      setJ(legR, Math.sin(ph + Math.PI) * amp, 0, Math.max(0, -Math.cos(ph + Math.PI)) * 1.3 * amp + 0.15, k * 2);
-      setJ(armL, -Math.sin(ph) * amp * 0.9, 0.15, -1.0, k * 2);
-      setJ(armR, -Math.sin(ph + Math.PI) * amp * 0.9, -0.15, -1.0, k * 2);
-      up = UP.clone().addScaledVector(p.heading, Math.min(hs, 26) * 0.012).normalize();
-    } else {
-      const b = Math.sin(clock * 2) * 0.04;
-      setJ(legL, -0.1, 0.12, 0.2, k); setJ(legR, 0.05, -0.12, 0.15, k);
-      setJ(armL, 0.05, 0.25 + b, -0.3, k); setJ(armR, 0.05, -0.25 - b, -0.3, k);
-    }
-  } else if (p.vel.y < -22) {
-    // head-first dive
-    up = p.vel.clone().normalize();
-    fwd = UP.clone().negate();
-    setJ(armL, 0.25, 0.35, 0, k); setJ(armR, 0.25, -0.35, 0, k);
-    setJ(legL, 0.15, 0.05, 0.2, k); setJ(legR, 0.25, -0.05, 0.3, k);
+      poseRun(p.runPhase, clamp(hs / 14, 0.4, 1.1));
+      chRate.fill(24, 0, 12);
+      aUp.addScaledVector(p.heading, Math.min(hs, 26) * 0.012).normalize();
+    } else poseIdle();
+  } else if (anim.dive) {
+    aUp.copy(p.vel).normalize();
+    // chest toward the ground and back along the fall: never parallel to the fall line, so no corkscrew
+    if (hs > 1) aw.set(p.vel.x / hs, 0, p.vel.z / hs); else aw.copy(p.heading);
+    aFwd.copy(UP).negate().sub(aw);
+    poseDive();
   } else {
-    up = UP.clone().addScaledVector(p.vel.clone().normalize(), 0.35).normalize();
-    setJ(armL, -0.3, 1.3, -0.4, k); setJ(armR, -0.3, -1.3, -0.4, k);
-    setJ(legL, -0.6, 0.1, 1.1, k); setJ(legR, 0.3, -0.1, 0.4, k);
+    if (speed > 0.5) aUp.addScaledVector(p.vel, 0.3 / speed).normalize();
+    poseAir(clamp(p.vel.y / 18, -1, 1) * 0.5 + 0.5);
   }
-  orientHero(up, fwd, 1 - Math.exp(-dt * 10));
-  hero.position.copy(drawPos);
-  hero.updateMatrixWorld(true);
+  if (p.zipFx > 0 && !p.zip) { aimArm(0, p.zipFxPoint, 30); aimArm(1, p.zipFxPoint, 30); }
+  if (p.onGround && anim.land > 0) { blendGoal(poseLand, smoothstep(Math.min(1, anim.land * 1.6))); chRate.fill(18); }
 
-  joints.armR.end.getWorldPosition(handR); joints.armL.end.getWorldPosition(handL);
-  if (p.web) { placeWeb(webs[0], handR, p.web.anchor); webs[1].visible = false; }
-  else if (p.zip) { placeWeb(webs[0], handR, p.zip.target); placeWeb(webs[1], handL, p.zip.target); }
-  else if (p.zipFx > 0) { p.zipFx -= dt; placeWeb(webs[0], handR, p.zipFxPoint); placeWeb(webs[1], handL, p.zipFxPoint); }
-  else { webs[0].visible = webs[1].visible = false; }
+  // tricks: a perfect swing jump or launch flips forward, a plain swing jump may spin; anything but free air ends them
+  if (p.trickAt !== anim.trickAt) {
+    anim.trickAt = p.trickAt;
+    // a plain swing jump spins every other time, so it doesn't get repetitive
+    if (air && p.vel.y > 6 && (p.trickPerfect || anim.spins++ % 2 === 0)) { anim.trick = p.trickPerfect ? 0 : 1; anim.trickT = 0; }
+  }
+  if (anim.trick >= 0) {
+    const dur = anim.trick === 0 ? 0.62 : 0.5;
+    anim.trickT += dt;
+    const t = Math.min(1, anim.trickT / dur);
+    trickQ.setFromAxisAngle(TRICK_AXES[anim.trick], Math.PI * 2 * smoothstep(t));
+    if (anim.trick === 0) blendGoal(poseTuck, Math.sin(Math.PI * t));
+    if (t >= 1 || !air) { heroBase.multiply(trickQ); anim.trick = -1; }   // fold what's left into the body's turn
+  }
+
+  basisQuat(aUp, aFwd, tq);
+  const ang = heroBase.angleTo(tq);
+  if (ang > 1e-5) heroBase.rotateTowards(tq, Math.min(ang * (1 - Math.exp(-dt * 10)), MAX_TURN * dt));
+  hero.quaternion.copy(heroBase);
+  if (anim.trick >= 0) hero.quaternion.multiply(trickQ);
+
+  for (let i = 0; i < NCH; i++) {
+    const g = i === 0 || i === 3 ? pose[i] + angleDiff(pose[i], goal[i]) : goal[i];   // arms turn the short way round
+    pose[i] += (g - pose[i]) * (1 - Math.exp(-dt * chRate[i]));
+  }
+  for (let i = 0; i < 4; i++) {
+    const L = LIMBS[i];
+    L.j1.rotation.x = pose[i * 3]; L.j1.rotation.z = pose[i * 3 + 1]; L.j2.rotation.x = pose[i * 3 + 2];
+  }
+  joints.spine.rotation.set(pose[SPINE], pose[SPINE + 1], pose[SPINE + 2]);
+  joints.head.rotation.x = pose[HEAD];
+
+  hero.position.copy(drawPos);
+  if (p.wallRun && anim.cling > 0.01) hero.position.addScaledVector(p.wallRun.n, -0.72 * anim.cling);   // pressed to the wall
+  hero.updateMatrixWorld(true);
+  // on the ground, the lower foot is planted: bent knees lower the body instead of lifting both feet off the floor
+  let plant = 0;
+  if (p.onGround && !p.wallRun) {
+    joints.legL.end.getWorldPosition(soleA); joints.legR.end.getWorldPosition(soleB);
+    plant = clamp(Math.min(soleA.y, soleB.y) - (drawPos.y - R), -0.1, 0.7);
+  }
+  // follow the stride exactly while grounded; ease in and out on landing and take-off
+  anim.plant = p.onGround && anim.grounded ? plant : anim.plant + (plant - anim.plant) * (1 - Math.exp(-dt * 25));
+  anim.grounded = p.onGround && !p.wallRun;
+  if (Math.abs(anim.plant) > 0.002) { hero.position.y -= anim.plant; hero.updateMatrixWorld(true); }
+
+  // webs leave from the palm; a released web whips back to its anchor
+  if (p.web) {
+    (anim.webHand === 0 ? joints.armL : joints.armR).end.getWorldPosition(palmL);
+    placeWeb(webs[0], palmL, p.web.anchor); webs[1].visible = false;
+    relAnchor.copy(p.web.anchor); anim.relT = 0;
+  } else {
+    joints.armL.end.getWorldPosition(palmL); joints.armR.end.getWorldPosition(palmR);
+    anim.relT += dt;
+    if (p.zip) { placeWeb(webs[0], palmR, p.zip.target); placeWeb(webs[1], palmL, p.zip.target); }
+    else if (p.zipFx > 0) { placeWeb(webs[0], palmR, p.zipFxPoint); placeWeb(webs[1], palmL, p.zipFxPoint); }
+    else if (anim.relT < 0.14) {
+      aw.copy(anim.webHand === 0 ? palmL : palmR).lerp(relAnchor, anim.relT / 0.14);
+      placeWeb(webs[0], aw, relAnchor); webs[1].visible = false;
+    } else webs[0].visible = webs[1].visible = false;
+  }
 }
 
 // ---------------------------------------------------------------- camera
-const probe = new V3(), shoulder = new V3();
-function updateCamera(dt) {
+const DEG = Math.PI / 180;
+const smoothstep = t => t * t * (3 - 2 * t);
+// Vertical FOV for this window shape. fov16 is the angle a 16:9 window would get at this moment (rest..rest+speed
+// widening); the rest view keeps its horizontal angle between 52 and 105 degrees, so a portrait phone isn't a slit
+// and an ultra-wide window isn't a fisheye. Speed and the web kick zoom out from there (tangent scale), capped at
+// 108 degrees vertical and 122 horizontal.
+function viewFov(fov16, kick, aspect, rest = 66) {
+  const tr = Math.tan(rest * DEG / 2);
+  const h = clamp(2 * Math.atan(tr * aspect), 52 * DEG, 105 * DEG);
+  const t = Math.tan(h / 2) / aspect * Math.tan(fov16 * DEG / 2) / tr * kick;
+  return Math.min(2 * Math.atan(t), 108 * DEG, 2 * Math.atan(Math.tan(61 * DEG) / aspect)) / DEG;
+}
+
+// Camera collision: how far a sphere of radius `pad` can travel from o along dir (normalized) before it touches a
+// building, its cornice ledge or the street, up to maxT. Each box is grown by pad with its edges cut at 45 degrees,
+// which holds the sphere's true rounded reach closely (a plainly grown box sticks out 40% further at the corners and
+// stops the camera short at every building corner). A shape the sphere already overlaps at o is skipped.
+const camNear = [];
+function camGather(o, r) {
+  camNear.length = 0;
+  for (const b of query(o.x, o.z, r)) camNear.push(b);   // query's array is shared, keep a copy
+}
+let sIn = 0, sOut = 0;
+function slab(o, d, lo, hi) {
+  if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) sOut = -1; return; }
+  let t1 = (lo - o) / d, t2 = (hi - o) / d;
+  if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+  if (t1 > sIn) sIn = t1;
+  if (t2 < sOut) sOut = t2;
+}
+function grownBoxT(o, d, best, x0, x1, y0, y1, z0, z1, r) {
+  const c = r * Math.SQRT2;
+  sIn = -Infinity; sOut = best;
+  slab(o.x, d.x, x0 - r, x1 + r); slab(o.y, d.y, y0 - r, y1 + r); slab(o.z, d.z, z0 - r, z1 + r);
+  slab(o.x + o.z, d.x + d.z, x0 + z0 - c, x1 + z1 + c); slab(o.x - o.z, d.x - d.z, x0 - z1 - c, x1 - z0 + c);
+  slab(o.y + o.x, d.y + d.x, y0 + x0 - c, y1 + x1 + c); slab(o.y - o.x, d.y - d.x, y0 - x1 - c, y1 - x0 + c);
+  slab(o.y + o.z, d.y + d.z, y0 + z0 - c, y1 + z1 + c); slab(o.y - o.z, d.y - d.z, y0 - z1 - c, y1 - z0 + c);
+  return sIn > sOut || sIn < 0 ? best : sIn;
+}
+// keep a point at least `need` from every building and ledge (and above the street): the camera line starts here
+function camPushOut(pt, need) {
+  pt.y = Math.max(pt.y, need);
+  for (const b of camNear) for (let k = 0; k < (b.prop ? 1 : 2); k++) {
+    const m = k ? 0.6 : 0, y0 = k ? b.maxY - 1.05 : b.minY;
+    const dx = pt.x - clamp(pt.x, b.minX - m, b.maxX + m), dy = pt.y - clamp(pt.y, y0, b.maxY), dz = pt.z - clamp(pt.z, b.minZ - m, b.maxZ + m);
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > 1e-4 && d < need) { const k2 = (need - d) / d; pt.x += dx * k2; pt.y += dy * k2; pt.z += dz * k2; }
+  }
+}
+function camCast(o, d, maxT, pad) {
+  let best = maxT;
+  if (d.y < -1e-6) best = Math.min(best, Math.max(0, (o.y - pad) / -d.y));
+  for (const b of camNear) {
+    best = grownBoxT(o, d, best, b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ, pad);
+    // the cornice overhangs the wall by 0.6 m along the top 1.05 m
+    if (!b.prop) best = grownBoxT(o, d, best, b.minX - 0.6, b.maxX + 0.6, b.maxY - 1.05, b.maxY, b.minZ - 0.6, b.maxZ + 0.6, pad);
+  }
+  return best;
+}
+
+// Free distance for the camera behind o. The swept sphere starts thin and only reaches the near-plane radius 1.5 m
+// out: a camera line leaving the hero alongside a wall (rounding a corner, running on a wall) slides past instead of
+// being stopped dead against the hero's back.
+const castFrom = new V3();
+function camFree(o, back, maxT, pad) {
+  const thin = camCast(o, back, maxT, 0.3);
+  if (thin <= 1.5) return thin;
+  castFrom.copy(o).addScaledVector(back, 1.5);
+  return Math.min(thin, 1.5 + camCast(castFrom, back, maxT - 1.5, pad));
+}
+
+// Auto camera, run from the physics loop at the fixed rate (the view's yaw steers movement, so this keeps movement
+// independent of the frame rate). Yaw follows the swing's travel line, or the velocity in the air; while a direction
+// is held, motion well off the view's forward is the player strafing or backing up, so it isn't chased (that would
+// spin camera-relative input in circles). Pitch dips and lifts gently with the swing arc, tilts down a fast fall and
+// looks up a wall run. All of it fades out while the player steers the camera and back in 0.6-1.8 s after.
+const BASE_PITCH = -0.12;
+let wallCamT = 0, againstT = 0;
+function followWeight() {
+  const idle = clock - lastLook;
+  return idle < 0.6 ? 0 : idle > 1.8 ? 1 : smoothstep((idle - 0.6) / 1.2);
+}
+function camFollow(dt) {
+  wallCamT = Math.max(0, wallCamT - dt);
+  const w = followWeight();
+  const hs = Math.hypot(p.vel.x, p.vel.z), steering = moveDir.lengthSq() > 0.01;
+  againstT = hs > 8 && p.vel.x * p.travel.x + p.vel.z * p.travel.z < -0.5 * hs ? againstT + dt : 0;
+  let yawT = NaN, yawK = 0, reach = 0, pitchT = NaN, pitchK = 0;
+  if (p.wallRun) {
+    // turn to within 25 degrees of square to the wall (unless A/D is held: turning would change what it does) and
+    // look up it while climbing
+    const n = p.wallRun.n, face = Math.atan2(-n.x, -n.z), off = angleDiff(face, cam.yaw);
+    if (Math.abs(off) > 0.44 && (!steering || Math.abs(moveDir.x * camR.x + moveDir.z * camR.z) < 0.4)) { yawT = face + Math.sign(off) * 0.44; yawK = 2.5; }
+    // nearing the top, level off in time to look over the roof edge (the camera can't stay below a ledge)
+    const top = clamp((p.wallRun.box.maxY - p.pos.y) / (2 + 0.6 * Math.max(0, p.vel.y)), 0, 1);
+    pitchT = lerp(BASE_PITCH, 0.15 + 0.5 * clamp(p.vel.y / 15, 0, 1), top); pitchK = top < 1 ? 4 : 2.5;
+    wallCamT = 1.2;
+  } else if (p.web) {
+    // the travel line, unless the hero has been moving against it for a while (thrown back off a wall or the city edge)
+    if (againstT > 0.6) { yawT = Math.atan2(p.vel.x, p.vel.z); yawK = 1.4; }
+    else { yawT = Math.atan2(p.travel.x, p.travel.z); yawK = 1.8; reach = 0.25; }   // held A/D still turns the swing, gently
+    pitchT = BASE_PITCH + 0.2 * Math.atan2(p.vel.y, Math.max(hs, 12)); pitchK = 1.5;
+  } else if (!p.onGround) {
+    if (hs > 6) { yawT = Math.atan2(p.vel.x, p.vel.z); yawK = 1.4; }
+    const fall = clamp(-(p.vel.y + 20) / 60, 0, 1);   // falling faster than 20 m/s tilts the view down at the street
+    pitchT = BASE_PITCH - 0.5 * fall; pitchK = wallCamT > 0 ? 4 : 1 + fall;
+  } else if (wallCamT > 0) { pitchT = BASE_PITCH; pitchK = 4; }   // just topped out a wall run: level off
+  // at the city edge there's nowhere to go: a view facing out turns back in (mirrored off the edge)
+  const ox = Math.abs(p.pos.x) > HALF - 30 ? Math.sign(p.pos.x) : 0, oz = Math.abs(p.pos.z) > HALF - 30 ? Math.sign(p.pos.z) : 0;
+  const out = ox || oz ? (camF.x * ox + camF.z * oz) / Math.hypot(ox, oz) : 0;
+  const edgeTurn = !p.wallRun && out > 0.2;
+  if (edgeTurn) { yawT = Math.atan2(ox ? -Math.abs(camF.x) * ox : camF.x, oz ? -Math.abs(camF.z) * oz : camF.z); yawK = 2.5; }
+  if (w <= 0) return;
+  if (yawT === yawT) {
+    const d = angleDiff(cam.yaw, yawT);
+    const fwd = edgeTurn || p.wallRun ? 1 : steering ? clamp(Math.cos(d) + reach, 0, 1) : 1;
+    cam.yaw += clamp(d * (1 - Math.exp(-dt * yawK * w * fwd)), -2 * dt, 2 * dt);
+  }
+  if (pitchT === pitchT) cam.pitch += (pitchT - cam.pitch) * (1 - Math.exp(-dt * pitchK * w));
+}
+function applyLook() {
   const sens = 0.0022;
   if (input.lookX || input.lookY) lastLook = clock;
   cam.yaw -= input.lookX * sens;
   cam.pitch = clamp(cam.pitch - input.lookY * sens, -1.15, 0.75);
-  input.lookX = input.lookY = 0;
+}
 
-  const hs = Math.hypot(p.vel.x, p.vel.z);
-  if (state === 'play' && clock - lastLook > 1.2 && hs > 6 && !p.wallRun) {
-    cam.yaw += angleDiff(cam.yaw, Math.atan2(p.vel.x, p.vel.z)) * (1 - Math.exp(-dt * 1.6));
-    cam.pitch = lerp(cam.pitch, -0.14, 1 - Math.exp(-dt * 0.8));
+// title: a slow orbit round the landmark, 430 m out and 230 m up, raised to stay 30 m over any tower near its path
+// (each raise is ramped over the samples either side, so the camera eases over instead of jumping)
+const TITLE_C = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45), TITLE_N = 256, titleY = new Float32Array(TITLE_N);
+const titleSun = new V3(TITLE_C.x, 100, TITLE_C.z);
+{
+  const raw = new Float32Array(TITLE_N);
+  for (let i = 0; i < TITLE_N; i++) {
+    const a = i / TITLE_N * Math.PI * 2;
+    raw[i] = 230;
+    for (const b of query(TITLE_C.x + Math.sin(a) * 430, TITLE_C.z + Math.cos(a) * 430, 45)) raw[i] = Math.max(raw[i], b.maxY + 30);
   }
-  camBasis();
-  if (state === 'title') {
-    const a = clock * 0.05 + 2.2, c = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45);
-    camera.position.set(c.x + Math.sin(a) * 430, 230, c.z + Math.cos(a) * 430);
-    camera.lookAt(c.x, 120, c.z);
-    camera.fov = 60; camera.updateProjectionMatrix();
-    sky.position.copy(camera.position);
-    sun.position.copy(c).addScaledVector(SUN, 400); sun.target.position.copy(c);
-    return;
-  }
-
-  const speed = p.vel.length();
-  const wantDist = state === 'title' ? 9 : 6 + Math.min(speed, 70) * 0.05;
-  cam.dist = lerp(cam.dist, wantDist, 1 - Math.exp(-dt * 3));
-  tmp.copy(drawPos); tmp.y += 1.3;
-  cam.target.lerp(tmp, 1 - Math.exp(-dt * 20));
-  shoulder.copy(camR).multiplyScalar(-0.9);   // over-the-shoulder offset
-  let d = cam.dist;
-  for (let i = 1; i <= 12; i++) {
-    probe.copy(cam.target).add(shoulder).addScaledVector(lookDir, -cam.dist * i / 12);
-    if (insideAny(probe) || probe.y < 0.4) { d = Math.max(1.2, cam.dist * (i - 1) / 12); break; }
-  }
-  camera.position.copy(cam.target).add(shoulder).addScaledVector(lookDir, -d);
-  camera.lookAt(tmp.copy(cam.target).add(shoulder).addScaledVector(lookDir, 10));
-
-  cam.fov = lerp(cam.fov, 66 + clamp((speed - 10) * 0.35, 0, 24), 1 - Math.exp(-dt * 4));
-  camera.fov = cam.fov; camera.updateProjectionMatrix();
+  for (let i = 0; i < TITLE_N; i++) for (let j = -12; j <= 12; j++)
+    titleY[i] = Math.max(titleY[i], raw[(i + j + TITLE_N) % TITLE_N] - Math.abs(j) * 5);
+}
+function titleCamera() {
+  const a = clock * 0.05 + 2.2, u = ((a / (Math.PI * 2)) % 1 + 1) % 1 * TITLE_N, i = Math.floor(u) % TITLE_N;
+  const y = lerp(titleY[i], titleY[(i + 1) % TITLE_N], u - Math.floor(u));
+  camera.position.set(TITLE_C.x + Math.sin(a) * 430, y, TITLE_C.z + Math.cos(a) * 430);
+  camera.lookAt(TITLE_C.x, 120, TITLE_C.z);
+  camera.fov = viewFov(60, 1, camera.aspect, 60); camera.updateProjectionMatrix();
   sky.position.copy(camera.position);
-  sun.position.copy(p.pos).addScaledVector(SUN, 400);
-  sun.target.position.copy(p.pos);
+  placeSun(titleSun, 600);
+}
+
+// Chase camera. The hero's chest is framed a little right of and below the centre (lower-middle third, the crosshair
+// stays clear), at that same screen spot whatever the distance or FOV. The framed point trails the hero a little at
+// speed, so the hero moves in the frame along the swing arc and pulls ahead when accelerating. Distance grows with
+// speed; each new web kicks the FOV out with a matching dolly in. Collision casts a sphere the size of the near plane
+// back from the hero: it pulls in at once when something comes between, eases in early when the hero's path is about
+// to bring something between, and springs back out slowly.
+// the hero's spot on screen (NDC); a portrait screen raises it to clear the touch buttons in the bottom corner
+const CAM_NDC_X = 0.1, CAM_NDC_Y = -0.3;
+const SHADOW_HALF = [160, 240, 340], SHADOW_UP = [75, 145], sunCenter = new V3();
+let shadowLv = 0;
+let camNdcY = CAM_NDC_Y;
+const viewDir = new V3(), camUp = new V3(), camBack = new V3(), altBack = new V3(), camOff = new V3(), camLag = new V3(), camFrame = new V3(), camAhead = new V3();
+let camTilt = 0;
+// for the view at this pitch (current yaw): its look direction into `look`, and into `back` the direction from the
+// framed point back to the camera that shows the point at (CAM_NDC_X, camNdcY)
+function aimAt(pitch, tanV, aspect, look, back) {
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  look.set(camF.x * cp, sp, camF.z * cp);
+  camUp.set(-sp * camF.x, cp, -sp * camF.z);
+  back.copy(look).addScaledVector(camR, CAM_NDC_X * tanV * aspect).addScaledVector(camUp, camNdcY * tanV).normalize().negate();
+}
+function updateCamera(dt) {
+  camBasis();
+  if (state === 'title') { titleCamera(); cam.snap = true; return; }
+
+  const speed = p.vel.length(), aspect = camera.aspect;
+  cam.fov = lerp(cam.fov, 66 + clamp((speed - 10) * 0.35, 0, 24), 1 - Math.exp(-dt * 4));
+  const kt = simTime - p.webAt, kick = 1 + 0.08 * (kt < 0 || kt > 2 ? 0 : kt < 0.1 ? smoothstep(kt / 0.1) : Math.exp(-(kt - 0.1) * 4));
+  camera.fov = viewFov(cam.fov, kick, aspect);
+  const tanV = Math.tan(camera.fov * DEG / 2);
+  // near-plane corner radius: the camera sphere that keeps walls out of the near plane
+  const pad = 0.3 * Math.sqrt(1 + tanV * tanV * (1 + aspect * aspect)) + 0.1;
+
+  const want = 6 + Math.min(speed, 70) * 0.04 + (aspect < 1 ? (1 - aspect) * 2 : 0) + (p.wallRun ? 1.5 : 0);
+  camFrame.copy(drawPos); camFrame.y += 0.2;
+  if (cam.snap) { camLag.copy(camFrame); cam.dist = cam.curD = want; camTilt = 0; cam.snap = false; }
+  cam.dist = lerp(cam.dist, want, 1 - Math.exp(-dt * 3));
+  camNdcY = CAM_NDC_Y + 0.2 * clamp((1 - aspect) * 2, 0, 1);
+  aimAt(cam.pitch - camTilt, tanV, aspect, viewDir, camBack);
+
+  // speed lag: the framed point trails the hero, soft-limited. Trailing behind only adds distance (up to 2 m);
+  // trailing to the side or up/down moves the hero about the frame, by up to 0.1 / 0.15 of the half-screen.
+  camLag.lerp(camFrame, 1 - Math.exp(-dt * 7));
+  camOff.subVectors(camLag, camFrame);
+  const maxS = 0.1 * tanV * aspect * cam.dist, maxU = (p.wallRun ? 0.03 : 0.15) * tanV * cam.dist;   // a wall run keeps the hero low, the wall above him in view
+  const lagBack = -2 * Math.tanh((camOff.x * camF.x + camOff.z * camF.z) / 2);
+  const ls = maxS * Math.tanh((camOff.x * camR.x + camOff.z * camR.z) / maxS);
+  camOff.set(camR.x * ls, maxU * Math.tanh(camOff.y / maxU), camR.z * ls);
+  camLag.copy(camFrame).add(camOff).addScaledVector(camF, -lagBack);
+  camGather(camFrame, want + 6 + Math.hypot(p.vel.x, p.vel.z) * 0.15);
+  const offL = camOff.length();
+  if (offL > 0.01) {   // the trailing point must be in the open, in sight of the hero
+    camAhead.copy(camOff).multiplyScalar(1 / offL);
+    const t = camCast(camFrame, camAhead, offL, pad);
+    if (t < offL) camOff.multiplyScalar(Math.max(0, t - 0.05) / offL);
+  }
+  cam.target.copy(camFrame).add(camOff);
+  camPushOut(cam.target, Math.max(0.9, pad + 0.05));
+
+  const dist = cam.dist / kick + lagBack;
+  const free = camFree(cam.target, camBack, dist, pad);
+  // squeezed (an alley, a nook, the street when looking up): while the auto camera is on, tilt the view down so the
+  // camera rises clear, as long as that actually opens up room; it eases back once there's space again
+  const w = state === 'play' ? followWeight() : 0;
+  let tiltGoal = 0;
+  if (w > 0 && free < dist * 0.6) {
+    aimAt(cam.pitch - camTilt - 0.4, tanV, aspect, camAhead, altBack);
+    tiltGoal = camFree(cam.target, altBack, dist, pad) > free + 1.5 ? Math.min(1, camTilt + 0.4) : camTilt;
+  }
+  camTilt += (tiltGoal - camTilt) * (1 - Math.exp(-dt * (tiltGoal > camTilt ? 2.5 * w : 1)));
+  // where the camera line will be in 0.15 s: start easing in before a corner cuts it
+  camAhead.set(cam.target.x + p.vel.x * 0.15, cam.target.y, cam.target.z + p.vel.z * 0.15);
+  const ahead = camFree(camAhead, camBack, dist, pad);
+  const goal = Math.min(dist, free, ahead);
+  // in fast, out slowly (a little quicker when the camera is right on top of the hero)
+  const rate = goal < cam.curD ? 12 : 2.2 + 4 * clamp(1 - cam.curD / 2.5, 0, 1);
+  cam.curD = Math.min(lerp(cam.curD, goal, 1 - Math.exp(-dt * rate)), free);
+  cam.free = free;
+  hero.visible = cam.curD > 0.8;   // a camera inside the hero would show the inside of his mesh
+  camera.position.copy(cam.target).addScaledVector(camBack, cam.curD);
+  camera.lookAt(camAhead.copy(camera.position).add(viewDir));
+  camera.updateProjectionMatrix();
+  sky.position.copy(camera.position);
+  // the shadow square sits ahead of the hero, where the camera looks, and widens with altitude (with some hysteresis)
+  if (shadowLv < 2 && drawPos.y > SHADOW_UP[shadowLv]) shadowLv++;
+  else if (shadowLv > 0 && drawPos.y < SHADOW_UP[shadowLv - 1] - 15) shadowLv--;
+  const half = SHADOW_HALF[shadowLv];
+  placeSun(sunCenter.copy(drawPos).addScaledVector(camF, half * 0.5), half);
 
   $('vignette').style.opacity = clamp((speed - 25) / 50, 0, 0.9).toFixed(2);
   if (windGain && actx) windGain.gain.setTargetAtTime(muted || state !== 'play' ? 0 : clamp(Math.pow(speed / 70, 2) * 0.35, 0, 0.4), actx.currentTime, 0.1);
 }
 
 // ---------------------------------------------------------------- main loop
-let hudTimer = 0, last = performance.now();
+let hudTimer = 0, last = performance.now(), testFreeze = false, crosshairZip = false;
+const zipLift = new V3();
 function simulate(dt, pad) {
   clock += dt;
 
   if (state === 'play') {
+    applyLook();
     let ix = 0, iz = 0;
     if (keys.has('KeyW') || keys.has('ArrowUp')) iz += 1;
     if (keys.has('KeyS') || keys.has('ArrowDown')) iz -= 1;
@@ -1506,6 +2104,10 @@ function simulate(dt, pad) {
     updateZipTarget();
     simAcc += dt;
     for (let n = 0; simAcc >= STEP - 1e-9 && n < MAX_STEPS; n++) {
+      camFollow(STEP);
+      camBasis();
+      moveDir.set(0, 0, 0).addScaledVector(camF, iz).addScaledVector(camR, ix);
+      if (moveDir.lengthSq() > 1) moveDir.normalize();
       p.prev.copy(p.pos);
       step(STEP);
       collectTokens(p.prev, p.pos);
@@ -1526,6 +2128,7 @@ function simulate(dt, pad) {
     if (tipTimer <= 0) { if (tipIdx < tips.length) nextTip(); else $('tip').style.opacity = 0; }
   }
   input.jumpPress = input.zipPress = false;
+  input.lookX = input.lookY = 0;
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) $('toast').style.opacity = 0; }
 
   for (const t of tokens) {
@@ -1537,24 +2140,33 @@ function simulate(dt, pad) {
   animateHero(dt);
   updateCamera(dt);
 
-  if (state === 'play' && zipTarget && !p.zip) {
-    zipMarker.visible = true;
-    zipMarker.position.copy(zipTarget.show);
+  // web strands stay at least 2.6 px wide: radius per metre of depth for this view
+  webMat.uniforms.px.value = 1.3 * 2 * Math.tan(camera.fov * DEG / 2) / Math.max(1, innerHeight);
+  // the zip ring marks a ledge a zip would launch from; a plain wall point only turns the crosshair into a ring
+  const zipOk = state === 'play' && zipTarget && !p.zip && zipTarget.point.distanceTo(p.pos) > 6;
+  zipMarker.visible = !!(zipOk && zipTarget.launch);
+  if (zipMarker.visible) {
+    const sc = Math.max(0.5, camera.position.distanceTo(zipTarget.show) * 0.02) * (1 + 0.06 * Math.sin(clock * 7));
+    zipMarker.scale.setScalar(sc);
+    // standing on the ledge it marks and a little in front of it, so the roof and cornice don't cut the ring
+    zipMarker.position.copy(zipTarget.show).addScaledVector(zipLift.subVectors(camera.position, zipTarget.show).normalize(), sc * 1.1);
+    zipMarker.position.y += sc;
     zipMarker.quaternion.copy(camera.quaternion);
-    zipMarker.scale.setScalar(Math.max(0.5, camera.position.distanceTo(zipTarget.show) * 0.02));
-    zipMarker.material.color.set(zipTarget.launch ? '#ffc35a' : '#f4efe6');
-  } else zipMarker.visible = false;
+  }
+  const wallZip = !!(zipOk && !zipTarget.launch);
+  if (wallZip !== crosshairZip) { crosshairZip = wallZip; $('crosshair').classList.toggle('zip', wallZip); }
 }
 function frame(now) {
   const dt = Math.min(MAX_STEPS * STEP, (now - last) / 1000);
   last = now;
-  simulate(dt, pollPad());
+  if (!testFreeze) simulate(dt, pollPad());
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
 
 spawn();
 animateHero(0.016);
+renderer.compile(scene, camera);   // every shader up front (webs and the zip ring start hidden), so the first swing doesn't stall
 requestAnimationFrame(frame);
 $('start-btn').focus();
 
@@ -1567,8 +2179,21 @@ $('start-btn').focus();
 //   added for movement tests: boxes (collision AABBs), cam (yaw, pitch, target), tokens ({ pos, taken }), PHYS_HZ,
 //     teleport([x,y,z], [vx,vy,vz], yaw, pitch): place the hero and clear movement state,
 //     findAnchor(): the anchor the next web would use from here, or null (changes no game state)
+//   added for camera tests: camera (the THREE.PerspectiveCamera), drawPos (the rendered hero position); cam.target is
+//     the point the camera frames (hero chest plus speed lag), cam.curD the camera distance after collision and
+//     cam.free the collision limit; look(dx, dy): mouse-look pixels for the next frame (counts as the player steering
+//     the camera, which pauses auto-follow); freeze(on): stop the real-time loop from advancing the game (it keeps
+//     rendering), so a screenshot shows exactly the state run() left
+//   added for visual tests: hero (the model's root group), heroBase (its orientation without flips and spins), anim
+//     (animation state: dive, cling, land, trick >= 0 while a flip or spin plays), joints (armL/armR/legL/legR
+//     { j1, j2, end }, spine, head),
+//     webs (the two strand meshes), webRadius(depth) (a strand's radius in metres at that view depth), zipMarker,
+//     zipTarget (null or { point, show, launch }), renderer, scene, sun (the shadow-casting light), input
 window.__webSlinger = {
-  p, get state() { return state; }, boxes, cam, tokens, PHYS_HZ,
+  p, get state() { return state; }, boxes, cam, tokens, PHYS_HZ, camera, drawPos,
+  hero, heroBase, anim, joints, webs, webRadius, zipMarker, get zipTarget() { return zipTarget; }, renderer, scene, sun, input,
+  look(dx, dy) { input.lookX += dx; input.lookY += dy; },
+  freeze(on = true) { testFreeze = on; },
   run(seconds, held = {}, frameDt = 1 / 60) {
     keys.clear(); Object.keys(held).forEach(k => held[k] && keys.add(k));
     mouseSwing = !!held.swing;
