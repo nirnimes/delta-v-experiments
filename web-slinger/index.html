@@ -49,11 +49,11 @@ body { background: var(--ink); color: var(--paper); font-family: var(--font-ui);
 #mouse-hint { position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); font-size: 15px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--paper); background: var(--glass); padding: 3px 10px; white-space: nowrap; }
 /* nearest-token marker: sits over the token, or on the screen edge with its arrow pointing the way */
 #marker { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
-#marker .gem { position: absolute; left: -9px; top: -9px; width: 14px; height: 14px; border: 2px solid var(--gold); background: rgba(255,195,90,.25); transform: rotate(45deg); box-shadow: 0 0 10px rgba(255,170,60,.7); }
-#marker .arrow { position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; display: none; }
-#marker .arrow::before { content: ''; position: absolute; left: 11px; top: 2px; border: 7px solid transparent; border-left: 11px solid var(--gold); filter: drop-shadow(0 0 4px rgba(0,0,0,.6)); }
+#marker .gem { position: absolute; left: -9px; top: -9px; width: 12px; height: 12px; border: 3px solid var(--gold); background: rgba(255,195,90,.35); transform: rotate(45deg); box-shadow: 0 0 0 2px rgba(10,14,28,.6), 0 0 12px rgba(255,170,60,.8); }
+#marker .arrow { position: absolute; left: 0; top: 0; width: 0; height: 0; display: none; }
+#marker .arrow::before { content: ''; position: absolute; left: 14px; top: -9px; border: 9px solid transparent; border-left: 14px solid var(--gold); filter: drop-shadow(0 0 2px rgba(10,14,28,.9)); }
 #marker.edge .arrow { display: block; }
-#marker span { position: absolute; left: 0; top: 13px; transform: translateX(-50%); font-size: 15px; font-weight: 700; letter-spacing: .06em; color: var(--gold); text-shadow: 0 1px 4px rgba(0,0,0,.8); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#marker span { position: absolute; left: 0; top: 15px; transform: translateX(-50%); font-size: 14px; font-weight: 700; letter-spacing: .06em; color: var(--gold); background: rgba(10,14,28,.6); padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 .overlay { position: fixed; inset: 0; display: grid; padding: 16px; background: linear-gradient(180deg, rgba(10,14,28,.15), rgba(10,14,28,.65)); overflow-y: auto; }
 .panel {
@@ -71,6 +71,8 @@ body { background: var(--ink); color: var(--paper); font-family: var(--font-ui);
 .controls dd { margin: 0; min-width: 0; }
 .note { margin: 0; color: var(--muted); font-size: 16px; line-height: 1.4; }
 .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+/* the Start button stays in view at any window height: a title panel taller than the window scrolls under it */
+#title-screen .actions { position: sticky; bottom: -16px; margin: 0 -28px -28px; padding: 12px 28px 28px; background: var(--glass); }
 button.primary {
   font-family: var(--font-display); font-size: 26px; letter-spacing: 2px; text-transform: uppercase;
   background: var(--red); color: var(--paper); border: 0; padding: 10px 28px 8px; cursor: pointer;
@@ -209,10 +211,13 @@ document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog('#eaa57c', 220, 1300);
-const camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.3, 4000);
+// a collapsed panel or iframe can report a 0 x 0 window: keep the last real shape (a 0 or infinite aspect would turn
+// the camera maths to NaN)
+const viewAspect = fallback => innerWidth > 0 && innerHeight > 0 ? Math.min(Math.max(innerWidth / innerHeight, 0.2), 6) : fallback;
+const camera = new THREE.PerspectiveCamera(68, viewAspect(16 / 9), 0.3, 4000);
 addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
-  camera.aspect = innerWidth / innerHeight;
+  camera.aspect = viewAspect(camera.aspect);
   camera.updateProjectionMatrix();
 });
 
@@ -600,13 +605,14 @@ scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ map: roofTexture(), 
 // water towers
 {
   const tank = new THREE.InstancedMesh(new THREE.CylinderGeometry(2.4, 2.4, 5, 14), new THREE.MeshStandardMaterial({ color: '#7a5a44', roughness: 0.95 }), towers.length);
-  const cap = new THREE.InstancedMesh(new THREE.ConeGeometry(2.7, 2, 14), new THREE.MeshStandardMaterial({ color: '#5a4436', roughness: 0.95 }), towers.length);
+  // a low conical lid: the collision box's flat top (see below) runs through it, so feet on it don't sink in
+  const cap = new THREE.InstancedMesh(new THREE.ConeGeometry(2.7, 0.8, 14), new THREE.MeshStandardMaterial({ color: '#5a4436', roughness: 0.95 }), towers.length);
   const legs = new THREE.InstancedMesh(new THREE.CylinderGeometry(1.8, 2.2, 3, 6), new THREE.MeshStandardMaterial({ color: '#3b3632', roughness: 1 }), towers.length);
   const m = new THREE.Matrix4();
   towers.forEach((p, i) => {
     m.makeTranslation(p.x, p.y + 1.5, p.z); legs.setMatrixAt(i, m);
     m.makeTranslation(p.x, p.y + 5.5, p.z); tank.setMatrixAt(i, m);
-    m.makeTranslation(p.x, p.y + 9, p.z); cap.setMatrixAt(i, m);
+    m.makeTranslation(p.x, p.y + 8.4, p.z); cap.setMatrixAt(i, m);
   });
   [tank, cap, legs].forEach(o => { o.castShadow = true; o.receiveShadow = true; scene.add(o); });
 }
@@ -631,13 +637,14 @@ scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ map: roofTexture(), 
       const x = lerp(x0 + 4, x1 - 4, rnd()), z = lerp(z0 + 4, z1 - 4, rnd()), s = 0.8 + rnd() * 0.6;
       crowns.setMatrixAt(n, m.compose(at.set(x, 6 * s, z), q, sc.set(s, s, s)));
       trunks.setMatrixAt(n, m.compose(at.set(x, 2 * s, z), q, sc.set(1, s, 1)));
+      boxes.push({ minX: x - 0.45, maxX: x + 0.45, minY: 0, maxY: 4 * s, minZ: z - 0.45, maxZ: z + 0.45, q: 0, prop: true, tree: true });
     }
   }
   [crowns, trunks].forEach(o => { o.castShadow = true; o.receiveShadow = true; scene.add(o); });
 }
 
 // water towers collide too (4.8 m wide, so the roof filters for tokens and spawn skip them)
-for (const t of towers) boxes.push({ minX: t.x - 2.4, maxX: t.x + 2.4, minY: t.y, maxY: t.y + 8, minZ: t.z - 2.4, maxZ: t.z + 2.4, q: 0, prop: true });
+for (const t of towers) boxes.push({ minX: t.x - 2.4, maxX: t.x + 2.4, minY: t.y, maxY: t.y + 8.5, minZ: t.z - 2.4, maxZ: t.z + 2.4, q: 0, prop: true });
 
 // spatial grid for collision and anchor queries
 const GRID = 40, grid = new Map();
@@ -677,21 +684,22 @@ function sphereHits(pt, r) {
   return false;
 }
 // first box hit by the ray o + d*t (d normalized), t < maxT. Walks the grid cells along the ray and allocates nothing:
-// the result object is shared, so copy what you keep. Boxes containing the origin are ignored.
+// the result object is shared, so copy what you keep. Boxes containing the origin are ignored. The +maxT, the finite
+// 1e30 for 'never' (not Infinity) and the indexed loop keep V8 from boxing doubles on the heap in the walk.
 const rayHit = { t: 0, box: null, n: new V3(), p: new V3() };
 function raycast(o, d, maxT) {
   qid++;
-  let best = maxT, hitBox = null, nAxis = -1, nSign = 0;
+  let best = +maxT, hitBox = null, nAxis = -1, nSign = 0;
   let ci = Math.floor(o.x / GRID), cj = Math.floor(o.z / GRID);
   const si = d.x > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
   const ax = Math.abs(d.x), az = Math.abs(d.z);
-  const stepX = ax > 1e-9 ? GRID / ax : Infinity, stepZ = az > 1e-9 ? GRID / az : Infinity;
-  let tx = ax > 1e-9 ? (d.x > 0 ? (ci + 1) * GRID - o.x : o.x - ci * GRID) / ax : Infinity;
-  let tz = az > 1e-9 ? (d.z > 0 ? (cj + 1) * GRID - o.z : o.z - cj * GRID) / az : Infinity;
+  const stepX = ax > 1e-9 ? GRID / ax : 1e30, stepZ = az > 1e-9 ? GRID / az : 1e30;
+  let tx = ax > 1e-9 ? (d.x > 0 ? (ci + 1) * GRID - o.x : o.x - ci * GRID) / ax : 1e30;
+  let tz = az > 1e-9 ? (d.z > 0 ? (cj + 1) * GRID - o.z : o.z - cj * GRID) / az : 1e30;
   for (let guard = 0; guard < 64; guard++) {
     const list = grid.get(gkey(ci, cj));
-    if (list) for (const idx of list) {
-      const b = boxes[idx];
+    if (list) for (let k = 0; k < list.length; k++) {
+      const b = boxes[list[k]];
       if (b.q === qid) continue;
       b.q = qid;
       let tmin = 0, tmax = best, axis = -1, sign = 0, ok = true;
@@ -921,7 +929,7 @@ const zipMarker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 32), new THREE.
 zipMarker.renderOrder = 10; zipMarker.visible = false; scene.add(zipMarker);
 
 // token beacons: a soft column of gold light rising 90 m from every token, so tokens read from across the city.
-// Additive and unfogged, kept at least about 4 px wide at any distance (like the webs), faded out up close; one
+// Additive and unfogged, kept at least about 6 px wide at any distance (like the webs), faded out up close; one
 // instanced draw (made in addBeacons once every token is placed).
 const beaconMat = new THREE.ShaderMaterial({
   uniforms: { px: webMat.uniforms.px },
@@ -929,13 +937,13 @@ const beaconMat = new THREE.ShaderMaterial({
     void main() {
       mat4 mv = modelViewMatrix * instanceMatrix;
       float depth = -(mv * vec4(0.0, position.y, 0.0, 1.0)).z;
-      float r = max(0.9, depth * px * 1.6);
+      float r = max(0.9, depth * px * 2.4);
       vH = position.y;
       vEdge = abs(normalize(mat3(mv) * normal).z) * smoothstep(10.0, 40.0, depth);
       gl_Position = projectionMatrix * mv * vec4(position.x * r, position.y, position.z * r, 1.0);
     }`,
   fragmentShader: `varying float vH; varying float vEdge;
-    void main() { gl_FragColor = vec4(vec3(1.0, 0.7, 0.3) * (vEdge * vEdge * (1.0 - vH) * 0.55), 1.0); }`,
+    void main() { gl_FragColor = vec4(vec3(1.0, 0.55, 0.12) * (vEdge * vEdge * (1.0 - vH) * 0.7), 1.0); }`,
   transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
 });
 let beacons = null;
@@ -961,11 +969,12 @@ const REEL_FRAC = 0.9, REEL_RATE = 12;  // a new web reels in to 90% of its leng
 const LAT_KEEP = 0.35;      // share of the anchor's sideways offset the swing plane keeps (the rest would pull you into the facade)
 const ASSIST = 2.5;         // steering assist: rate at which sideways drift off the travel line is redirected forward
 const CRUISE = 40;          // the downswing pushes toward this speed
+const PIVOT_OPEN = 22;      // how far a fulcrum sits out from a facade with nothing across from it (further, the drawn web and the rope part ways)
 const p = {
   pos: new V3(), vel: new V3(), prev: new V3(), heading: new V3(0, 0, 1),
   travel: new V3(0, 0, 1),  // intended direction while swinging: steers anchors and the assist
   onGround: false, wallN: null, wallHit: 0, wallBox: null, wallRun: null, wallCool: 0, jumpN: new V3(),
-  web: null, zip: null, reattach: 0, runPhase: 0, runTime: 0,
+  web: null, zip: null, reattach: 0, runPhase: 0, runTime: 0, leaps: 0,   // leaps: swing leaps off the ground since the last web
   airZips: 2, zipFx: 0, zipFxPoint: new V3(), releaseAt: -9, releaseTheta: 0, perchAt: -9, perchSpeed: 0,
   webAt: -9,                // simTime of the last web attach, for camera and sound effects
   trickAt: -9, trickPerfect: false   // simTime of the last swing jump or point launch, for the hero's flips
@@ -978,11 +987,11 @@ const cam = { yaw: 0, pitch: 0.1, dist: 7, fov: 66, target: new V3(), curD: 7, f
 function teleport(pos, vel, yaw, pitch = 0.12) {
   p.pos.copy(pos); p.prev.copy(pos); drawPos.copy(pos); p.vel.copy(vel);
   p.web = p.zip = p.wallRun = p.wallN = p.wallBox = null;
-  p.onGround = false; p.reattach = p.wallCool = p.zipFx = p.runTime = 0; p.airZips = 2;
+  p.onGround = false; p.reattach = p.wallCool = p.zipFx = p.runTime = p.leaps = 0; p.airZips = 2;
   p.releaseAt = p.perchAt = p.webAt = -9;
   jumpBuf = zipBuf = simAcc = 0; swingTap = false;
   p.travel.set(Math.sin(yaw), 0, Math.cos(yaw)); p.heading.copy(p.travel);
-  cam.yaw = yaw; cam.pitch = pitch; cam.snap = true;
+  cam.yaw = yaw; cam.pitch = pitch; cam.snap = true; camTurn = 1;
   cam.target.copy(pos); cam.target.y += 0.2;
 }
 // Start on a mid-height roof (open sky above it) near (200, 200), at its corner nearest the landmark, looking down the
@@ -1046,6 +1055,7 @@ addEventListener('keyup', e => {
 });
 addEventListener('blur', () => {
   keys.clear(); mouseSwing = false;
+  cancelResume();   // a 'Resuming…' wait doesn't carry on into the background either
   if (state === 'play' && !isTouch) pause();   // the keyboard went elsewhere (another window, a browser dialog)
 });
 
@@ -1056,7 +1066,7 @@ const view = renderer.domElement;
 // web. A sandbox that blocks the lock, or three refusals in a row, give up on it (lock.unavailable): clicks swing as
 // usual and resting the free cursor at a screen edge keeps turning the view.
 let cursorX = -1;   // the cursor's x while it's over the game (-1: outside), for turning at the screen edge without the lock
-const lock = { pending: false, reqAt: 0, unavailable: isTouch || !view.requestPointerLock, fails: 0, lostAt: -1e9, pageExit: false, noteT: 0 };
+const lock = { pending: false, reqAt: 0, unavailable: isTouch || !view.requestPointerLock, fails: 0, lostAt: -1e9, changedAt: -1e9, pageExit: false, noteT: 0 };
 function lockPointer() {
   if (lock.unavailable || document.pointerLockElement) return;
   if (lock.pending) {
@@ -1077,15 +1087,20 @@ function lockFailed(err) {
   if (++lock.fails >= 3) lock.unavailable = true;
 }
 document.addEventListener('pointerlockchange', () => {
-  lock.pending = false;
+  lock.pending = false; lock.changedAt = performance.now();
   cursorX = -1;   // unknown until the free cursor moves again
-  if (document.pointerLockElement) { lock.fails = 0; return; }
+  if (document.pointerLockElement) {
+    lock.fails = 0;
+    // a request still pending when the game paused (P, Start, a blur) was granted afterwards: give the menu its cursor
+    if (state !== 'play') { lock.pageExit = true; document.exitPointerLock(); }
+    return;
+  }
   if (lock.pageExit) { lock.pageExit = false; return; }   // pause() let it go: already paused (or quickly resumed)
   lock.lostAt = performance.now();   // the player pressed Esc (or the browser took it back)
   if (state === 'play') pause();
 });
 document.addEventListener('pointerlockerror', () => lockFailed(null));
-document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') pause(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelResume(); if (state === 'play') pause(); } });
 
 view.addEventListener('contextmenu', e => e.preventDefault());
 view.addEventListener('mousedown', e => {
@@ -1096,12 +1111,18 @@ view.addEventListener('mousedown', e => {
   if (e.button === 2) input.zipPress = true;
 });
 addEventListener('mouseup', e => { if (e.button === 0) mouseSwing = false; });
+let lastMoveAt = 0;
 addEventListener('mousemove', e => {
   if (isTouch) return;
   if (!document.pointerLockElement) cursorX = e.clientX;   // (a locked cursor's position means nothing)
+  const now = performance.now(), since = Math.min(now - lastMoveAt, 100);
+  lastMoveAt = now;
   if (state !== 'play') return;
-  // Chrome can report the cursor's jump to the lock point as one huge movement: no hand moves 250 px in one event
-  if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
+  // Chrome can report the cursor's jump to the lock point as one huge movement, right after the lock changes, and now
+  // and then a stray spike: drop a move far beyond what a hand does in the time since the last one (moves are
+  // coalesced per frame, so a fast flick at a low frame rate still gets through)
+  const most = now - lock.changedAt < 150 ? 250 : 250 + 15 * since;
+  if (Math.abs(e.movementX) > most || Math.abs(e.movementY) > most) return;
   // without the lock (not granted yet, refused, or blocked here) the free cursor still looks around
   input.lookX += e.movementX || 0; input.lookY += e.movementY || 0;
 });
@@ -1117,7 +1138,7 @@ let hintText = '';
 // what a click will do without the lock: capture the mouse, or (lock unavailable) a few seconds' note on edge turning
 function mouseHint(dt) {
   let t = '';
-  if (!isTouch && !document.pointerLockElement) {
+  if (!isTouch && !document.pointerLockElement && clock - padUsedAt > 10) {   // (not while playing on a gamepad)
     if (!lock.unavailable) t = lock.pending && performance.now() - lock.reqAt < 1500 ? '' : 'Click to capture the mouse';
     else if ((lock.noteT += dt) < 6) t = 'Rest the cursor at a screen edge to keep turning';
   }
@@ -1186,7 +1207,11 @@ tbtns.addEventListener('pointercancel', liftFinger);
 const looks = new Map();
 view.addEventListener('pointerdown', e => {
   if (!isTouch || state !== 'play') return;
-  if (stick.id === null && e.clientX < innerWidth * 0.45 && e.clientY > innerHeight * 0.3) { grabStick(e); return; }
+  // the stick's zone is the lower left 45%; on a portrait screen it runs on along the bottom up to the buttons, so a
+  // thumb landing just right of the ring still grabs it
+  let zoneR = innerWidth * 0.45;
+  if (innerHeight > innerWidth) { const r = tbtns.getBoundingClientRect(); if (e.clientY > r.top - 40) zoneR = Math.max(zoneR, r.left - 8); }
+  if (stick.id === null && e.clientX < zoneR && e.clientY > innerHeight * 0.3) { grabStick(e); return; }
   looks.set(e.pointerId, { x: e.clientX, y: e.clientY });
 });
 view.addEventListener('pointermove', e => {
@@ -1196,11 +1221,20 @@ view.addEventListener('pointermove', e => {
 });
 const endLook = e => looks.delete(e.pointerId);
 view.addEventListener('pointerup', endLook); view.addEventListener('pointercancel', endLook);
-$('t-pause').addEventListener('click', () => pause());
-$('t-mute').addEventListener('click', () => toggleMute());
+// Pause and mute act on pointerup, not click: a browser makes a click only from a lone finger, and these get tapped
+// with a thumb still on the stick or Swing. Only a finger that went down on the button counts.
+for (const [id, fn] of [['t-pause', pause], ['t-mute', toggleMute]]) {
+  const el = $(id);
+  let downId = null;
+  el.addEventListener('pointerdown', e => { downId = e.pointerId; });
+  el.addEventListener('pointerup', e => { if (e.pointerId === downId) { downId = null; e.preventDefault(); fn(); } });
+  el.addEventListener('pointercancel', () => { downId = null; });
+  el.addEventListener('click', e => { if (e.detail === 0) fn(); });   // (keyboard activation)
+}
 
 // gamepad (standard mapping)
 const padPrev = [], padStick = { x: 0, y: 0 };
+let padUsedAt = -1e9;   // clock time of the last gamepad input
 const padBtn = (gp, i) => !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.3));
 const padTap = (gp, i) => padBtn(gp, i) && !padPrev[i];
 const dz = v => Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85;   // dead zone, rescaled so full tilt is still 1
@@ -1223,8 +1257,9 @@ function pollPad(dt) {
     // right stick, per second: full tilt turns as fast as it used to at 60 fps, whatever the frame rate
     input.lookX += dz(gp.axes[2] || 0) * 840 * dt; input.lookY += dz(gp.axes[3] || 0) * 600 * dt;
   }
-  for (let i = 0; i < gp.buttons.length; i++) padPrev[i] = padBtn(gp, i);
+  for (let i = 0; i < gp.buttons.length; i++) if ((padPrev[i] = padBtn(gp, i))) padUsedAt = clock;
   padStick.x = dz(gp.axes[0] || 0); padStick.y = dz(gp.axes[1] || 0);
+  if (padStick.x || padStick.y || dz(gp.axes[2] || 0) || dz(gp.axes[3] || 0)) padUsedAt = clock;
   return padStick;
 }
 
@@ -1285,6 +1320,23 @@ function steerRoom(vel, dir, top) {
   const m = Math.hypot(dir.x, dir.z);
   if (m < 0.01) return 0;
   return clamp((top + 4 - (vel.x * dir.x + vel.z * dir.z) / m) / 4, 0, 1);
+}
+// The city edge: past the outermost facades there's only a strip of waterfront, then the invisible boundary. In the
+// air, steering out of the city fades out over the last 30-20 m (it could only press you into the boundary)...
+function edgeSteer(v) {
+  const kx = clamp((Math.abs(p.pos.x) - HALF + 30) / 10, 0, 1), kz = clamp((Math.abs(p.pos.z) - HALF + 30) / 10, 0, 1);
+  if (v.x * p.pos.x > 0) v.x *= 1 - kx;
+  if (v.z * p.pos.z > 0) v.z *= 1 - kz;
+}
+// ...and within 30 m of it, a direction to look for webs or leap in loses its part pointing out of the city, so the hero
+// follows the shoreline. One pointing straight out turns along the edge toward the city centre's side (the way the
+// camera's edge turn goes), and in a corner toward the centre itself. Returns v normalized.
+function edgeAim(v) {
+  const ex = Math.abs(p.pos.x) > HALF - 30, ez = Math.abs(p.pos.z) > HALF - 30;
+  if (ex && v.x * p.pos.x > 0) v.x = 0;
+  if (ez && v.z * p.pos.z > 0) v.z = 0;
+  if ((ex || ez) && v.x * v.x + v.z * v.z < 0.04) { v.x = ez ? (p.pos.x > 0 ? -1 : 1) : 0; v.z = ex ? (p.pos.z > 0 ? -1 : 1) : 0; }
+  return v.normalize();
 }
 // Swing physics, shared by the live swing and by the anchor check's look-ahead.
 // w = { pivot, len, goal, age }: pivot is the physics fulcrum (see setPivot), goal the length the rope reels in to.
@@ -1348,6 +1400,7 @@ function swingContact(pivot, len, goal) {
     steerTravel(aheadTravel, 1 / 30);
     ropeStep(aheadPos, aheadVel, aheadWeb, aheadTravel, 1 / 30);
     if (aheadPos.y < R + 0.4 || sphereHits(aheadPos, R + 0.25)) return i / 30;
+    if (Math.abs(aheadPos.x) > HALF - R - 0.5 || Math.abs(aheadPos.z) > HALF - R - 0.5) return i / 30;   // into the city boundary
     if (swingDone(aheadPos, aheadVel, aheadWeb)) return Infinity;
   }
   return Infinity;
@@ -1388,25 +1441,31 @@ function gatherFaces(b, fwdMin) {
   }
 }
 const streetRay = new V3(), streetFrom = new V3();
+let pivotHeld = false;   // the last setPivot held the fulcrum in to PIVOT_OPEN from its facade
 // The swing's fulcrum. For a facade alongside the travel line it sits over the middle of the street, so the swing
 // carries you down the street instead of pulling you into the wall; otherwise it's the anchor with most of its
-// sideways offset from the travel line removed.
-function setPivot(o, out) {
+// sideways offset from the travel line removed. With nothing across the street (a park, the waterfront) it sits over
+// the hero's line, but no more than PIVOT_OPEN out from the face (twice that if `open`).
+function setPivot(o, out, open) {
   const c = o.c, dx = c.x - p.pos.x, dz = c.z - p.pos.z;
+  pivotHeld = false;
   if (Math.abs(o.nx * pref.x + o.nz * pref.z) < 0.5) {
     const heroOff = -(dx * o.nx + dz * o.nz);
     streetFrom.set(c.x + o.nx * 0.1, clamp(p.pos.y, 2, c.y - 1), c.z + o.nz * 0.1);
     const hit = raycast(streetFrom, streetRay.set(o.nx, 0, o.nz), 50);
-    const off = hit ? hit.t / 2 : Math.max(heroOff, 6);
+    pivotHeld = !hit && !open && heroOff > PIVOT_OPEN;
+    const off = hit ? hit.t / 2 : clamp(heroOff, 6, open ? 2 * PIVOT_OPEN : PIVOT_OPEN);
     out.set(c.x + o.nx * off, c.y, c.z + o.nz * off);
   } else {
     const f = dx * pref.x + dz * pref.z;
     out.set(c.x - (dx - pref.x * f) * (1 - LAT_KEEP), c.y, c.z - (dz - pref.z * f) * (1 - LAT_KEEP));
   }
+  // never out over the city boundary: at most over the middle of the waterfront strip
+  out.x = clamp(out.x, 5.5 - HALF, HALF - 5.5); out.z = clamp(out.z, 5.5 - HALF, HALF - 5.5);
 }
 // the web for candidate o: the rope starts at its true length and reels toward 90%, but never so long it reaches the street
-function fillFound(o) {
-  setPivot(o, found.pivot);
+function fillFound(o, open) {
+  setPivot(o, found.pivot, open);
   found.len = p.pos.distanceTo(found.pivot);
   found.goal = Math.max(ROPE_MIN, Math.min(found.len * REEL_FRAC, found.pivot.y - STREET_CLEAR));
   found.anchor.copy(o.c);
@@ -1419,17 +1478,22 @@ function pickAnchor(arcChecks, lateOk) {
   for (let i = 0; i < candN; i++) candOrder.push(i);
   candOrder.sort((a, b) => cand[a].score - cand[b].score);
   handPt.copy(p.pos); handPt.y += 0.6;
-  let sights = 0, arcs = 0, late = -1, lateT = 1;
+  let sights = 0, arcs = 0, late = -1, lateT = 1, lateOpen = false;
   for (const i of candOrder) {
     if (++sights > 30 || arcs >= arcChecks) break;
     if (segmentBlocked(handPt, cand[i].c, 0.3)) continue;
-    fillFound(cand[i]);
-    arcs++;
-    const t = swingContact(found.pivot, found.len, found.goal);
-    if (t === Infinity) return found;
-    if (lateOk && t > lateT) { late = i; lateT = t; }
+    for (let open = false; ; open = true) {
+      fillFound(cand[i], open);
+      if (found.len < ROPE_MIN) break;   // a fulcrum right by the hero: too short a rope to swing on
+      arcs++;
+      const t = swingContact(found.pivot, found.len, found.goal);
+      if (t === Infinity) return found;
+      if (lateOk && t > lateT) { late = i; lateT = t; lateOpen = open; }
+      // a fulcrum held in toward its facade can swing the hero into it: then try it out over his line after all
+      if (open || !pivotHeld) break;
+    }
   }
-  return late < 0 ? null : fillFound(cand[late]);
+  return late < 0 ? null : fillFound(cand[late], lateOpen);
 }
 function findAnchor() {
   const hs = Math.hypot(p.vel.x, p.vel.z);
@@ -1439,6 +1503,7 @@ function findAnchor() {
     if (tmp2.dot(pref) < -0.3) pref.copy(tmp2);   // turning around: aim where the stick points
     else pref.addScaledVector(tmp2, 0.9).normalize();
   }
+  edgeAim(pref);   // not out to sea: there's nothing to swing from out there
   // the streets run along x and z: a heading within 30 degrees of one follows that street
   if (Math.abs(pref.x) > 0.866) pref.set(Math.sign(pref.x), 0, 0);
   else if (Math.abs(pref.z) > 0.866) pref.set(0, 0, Math.sign(pref.z));
@@ -1459,7 +1524,12 @@ function findAnchor() {
   if (pickAnchor(8, false)) return found;
   candN = 0;
   for (const b of query(p.pos.x, p.pos.z, 80)) gatherFaces(b, -6);
-  return pickAnchor(10, true);
+  const a = pickAnchor(10, true);
+  if (a || p.vel.y > -15) return a;
+  // falling fast with nothing ahead: a facade behind will do (dropped off a tower, he webs that tower and swings out)
+  candN = 0;
+  for (const b of query(p.pos.x, p.pos.z, 60)) gatherFaces(b, -30);
+  return pickAnchor(6, true);
 }
 
 function attach() {
@@ -1467,9 +1537,33 @@ function attach() {
   if (!a) { p.reattach = 0.15; return false; }
   p.web = { anchor: a.anchor.clone(), pivot: a.pivot.clone(), len: a.len, goal: a.goal, age: 0, t0: simTime, tick: 0, sky: false };
   p.travel.copy(pref);
-  p.airZips = 2; p.webAt = simTime;
+  p.airZips = 2; p.webAt = simTime; p.leaps = 0;
   thwip(1 + Math.random() * 0.15);
   return true;
+}
+// distance along the horizontal unit d to the edge of the roof the hero stands on (0 off a roof)
+function roofRunout(d) {
+  for (const b of query(p.pos.x, p.pos.z, 0)) {
+    if (p.pos.x < b.minX || p.pos.x > b.maxX || p.pos.z < b.minZ || p.pos.z > b.maxZ || Math.abs(b.maxY + R - p.pos.y) > 0.3) continue;
+    const tx = d.x > 1e-6 ? (b.maxX - p.pos.x) / d.x : d.x < -1e-6 ? (b.minX - p.pos.x) / d.x : Infinity;
+    const tz = d.z > 1e-6 ? (b.maxZ - p.pos.z) / d.z : d.z < -1e-6 ? (b.minZ - p.pos.z) / d.z : Infinity;
+    return Math.min(tx, tz);
+  }
+  return 0;
+}
+// Swing held on the ground: leap up and forward into the swing. When the last leap found nothing to web to (a roof
+// that tops everything near it), bound off the roof's edge instead, so the swing starts on the drop.
+function leap() {
+  const d = tmp.set(moveDir.x, 0, moveDir.z);
+  if (d.lengthSq() < 0.01) d.set(camF.x, 0, camF.z);
+  edgeAim(d);
+  if (p.leaps > 0) {
+    // fast enough to clear the edge in one bound (about 0.8 s in the air)
+    const sp = Math.max(clamp((roofRunout(d) + 2) * 1.3, 8, 28), p.vel.dot(d));
+    p.vel.set(d.x * sp, 10, d.z * sp);
+  } else { p.vel.addScaledVector(d, 6); p.vel.y = 14; }
+  p.leaps++;
+  p.onGround = false; p.reattach = 0.12;
 }
 function release() {
   if (!p.web) return;
@@ -1512,6 +1606,7 @@ function landingSoon() {
 }
 
 let zipTarget = null;
+const ZIP_MIN = 6;   // a zip target closer than this is no zip (no ring or crosshair shows it either)
 const zipT = { point: new V3(), show: new V3(), launch: false };
 const zipRay = new V3(), zipFrom = new V3();
 function updateZipTarget() {
@@ -1522,7 +1617,9 @@ function updateZipTarget() {
   const hit = raycast(zipFrom, zipRay, 150);
   if (!hit) return;
   const b = hit.box;
-  if (hit.n.y > 0 || (hit.n.y === 0 && hit.p.y > b.maxY - 7)) {
+  // a ledge: a roof, the top of a wall, or (wall running) the top of the wall being climbed, if it isn't too far up
+  const climbing = p.wallRun && b === p.wallRun.box && b.maxY - p.pos.y < 120;
+  if (hit.n.y > 0 || (hit.n.y === 0 && (hit.p.y > b.maxY - 7 || climbing))) {
     zipT.point.set(hit.p.x, b.maxY + R + 0.2, hit.p.z);
     if (hit.n.y === 0) zipT.point.addScaledVector(hit.n, -0.8);
     zipT.show.set(zipT.point.x, b.maxY + 0.4, zipT.point.z);
@@ -1606,7 +1703,7 @@ function collide() {
     const vn = p.vel.x * nx + p.vel.y * ny + p.vel.z * nz;
     if (vn < 0) { p.vel.x -= nx * vn; p.vel.y -= ny * vn; p.vel.z -= nz * vn; }
     if (ny > 0.6) p.onGround = true;
-    else if (Math.abs(ny) < 0.3) {
+    else if (Math.abs(ny) < 0.3 && !b.tree) {   // (a tree trunk only stops you: nothing to run up or cling to)
       p.wallN = wallNormal.set(nx, 0, nz).normalize(); p.wallBox = b;
       if (vn < 0) p.wallHit = Math.max(p.wallHit, -vn);
     }
@@ -1711,17 +1808,11 @@ function step(dt) {
   const tap = swingTap;
   swingTap = false;
 
-  if (zipBuf > 0 && zipTarget && !p.zip) startZip();
+  if (zipBuf > 0 && zipTarget && !p.zip && zipTarget.point.distanceTo(p.pos) > ZIP_MIN) startZip();
   if (p.zip) { zipMove(dt); return; }
 
   if (input.swing && !p.web && !p.wallRun && p.reattach <= 0) {
-    if (p.onGround) {
-      // leap up and forward into the swing
-      tmp.set(moveDir.x, 0, moveDir.z);
-      if (tmp.lengthSq() < 0.01) tmp.set(camF.x, 0, camF.z);
-      p.vel.addScaledVector(tmp.normalize(), 6); p.vel.y = 14;
-      p.onGround = false; p.reattach = 0.12;
-    }
+    if (p.onGround) leap();
     else attach();
   }
   if (!input.swing && p.web) release();
@@ -1808,8 +1899,16 @@ const tips = isTouch ? [
 ];
 // The nearest token still out there: a gold diamond over it with its distance, or, when it's off screen or behind the
 // camera, a diamond on the screen's edge (clear of the readouts and touch controls) with an arrow pointing the way.
-const marker = { el: $('marker'), arrow: document.querySelector('#marker .arrow'), dist: $('marker-dist'), tok: null, pick: 0, on: false, edge: false, text: '', x: 0, y: 0, a: 0 };
+const marker = { el: $('marker'), arrow: document.querySelector('#marker .arrow'), dist: $('marker-dist'), tok: null, pick: 0, on: false, edge: false, metres: -1, x: 0, y: 0, a: 9 };
 const mkv = new V3();
+// The highest and lowest the marker may sit at x, from the screen's centre (y down), with W, H the half-screen: clear
+// of the speed readout (bottom right; top right on touch) and the tip, and on touch of the menu buttons (top left) and
+// the stick and buttons (bottom corners)
+function markerTop(x, W, H) {
+  if (!isTouch) return -(H - 44);
+  return -(H - (tipOn && x < 420 - W ? 180 : Math.abs(x) > W - 250 ? 120 : 40));
+}
+function markerBottom(x, W, H) { return Math.max(markerTop(x, W, H) + 10, H - (Math.abs(x) > W - 250 ? (isTouch ? 240 : 170) : isTouch ? 110 : 120)); }
 function updateMarker(dt) {
   const m = marker;
   m.pick -= dt;
@@ -1821,35 +1920,37 @@ function updateMarker(dt) {
   if (!!m.tok !== m.on) { m.on = !!m.tok; m.el.hidden = !m.on; }
   if (!m.tok) return;
   const W = innerWidth / 2, H = innerHeight / 2;
-  // the box the marker stays in, as distances from the screen's centre (y down)
-  const bx = W - 34, bUp = H - (isTouch ? 120 : 44), bDown = H - (isTouch ? Math.max(210, H * 0.5) : 110);
+  const bx = W - 34;
+  camera.updateMatrixWorld();   // this frame's view (three only updates it at render)
   mkv.copy(m.tok.pos).applyMatrix4(camera.matrixWorldInverse);   // camera space, -z ahead
-  let x, y, edge;
+  let x, y, edge, off;
   if (mkv.z < -0.5) {
     mkv.applyMatrix4(camera.projectionMatrix);
     x = mkv.x * W; y = -mkv.y * H - 26;   // hovering just above the token
-    edge = x < -bx || x > bx || y < -bUp || y > bDown;
+    edge = x < -bx || x > bx || y < markerTop(x, W, H) || y > markerBottom(x, W, H);
+    off = Math.abs(x) > W || Math.abs(y) > H;
   } else {
-    x = mkv.x; y = -mkv.y; edge = true;   // behind: point the way round
+    x = mkv.x; y = -mkv.y; edge = off = true;   // behind: point the way round
     if (Math.abs(x) + Math.abs(y) < 1e-3) y = 1;
   }
   if (edge) {
-    // slide in along the line from the centre until it's inside the box
-    const k = Math.min(bx / Math.max(Math.abs(x), 1e-6), (y < 0 ? bUp : bDown) / Math.max(Math.abs(y), 1e-6));
-    m.a = Math.atan2(y, x);
-    x *= k; y *= k;
-    m.arrow.style.transform = `rotate(${m.a.toFixed(3)}rad)`;
+    // off screen: out to the screen's edge along its direction first; then into the box. The arrow keeps the true
+    // direction from the centre.
+    const a = Math.atan2(y, x);
+    if (off) { const k = Math.min(W / Math.max(Math.abs(x), 1e-6), H / Math.max(Math.abs(y), 1e-6)); x *= k; y *= k; }
+    x = clamp(x, -bx, bx); y = clamp(y, markerTop(x, W, H), markerBottom(x, W, H));
+    if (Math.abs(a - m.a) > 0.01) { m.a = a; m.arrow.style.transform = `rotate(${a.toFixed(3)}rad)`; }
   }
   if (edge !== m.edge) { m.edge = edge; m.el.classList.toggle('edge', edge); }
   if (Math.abs(x - m.x) > 0.5 || Math.abs(y - m.y) > 0.5) {
     m.x = x; m.y = y;
     m.el.style.transform = `translate(${(W + x).toFixed(1)}px, ${(H + y).toFixed(1)}px)`;
   }
-  const text = Math.round(m.tok.pos.distanceTo(drawPos)) + ' m';
-  if (text !== m.text) { m.text = text; m.dist.textContent = text; }
+  const dist = Math.round(m.tok.pos.distanceTo(drawPos));
+  if (dist !== m.metres) { m.metres = dist; m.dist.textContent = dist + ' m'; }
 }
-let tipIdx = 0, tipTimer = 0;
-function nextTip() { $('tip').innerHTML = tips[tipIdx]; $('tip').style.opacity = 1; tipIdx++; tipTimer = 7; }
+let tipIdx = 0, tipTimer = 0, tipOn = false;
+function nextTip() { $('tip').innerHTML = tips[tipIdx]; $('tip').style.opacity = 1; tipIdx++; tipTimer = 7; tipOn = true; }
 
 // ---------------------------------------------------------------- states
 let state = 'title', resumeTimer = 0;
@@ -1859,6 +1960,7 @@ function start(lockMouse = true) {
   if (state === 'play') return;
   audio();
   state = 'play';
+  camera.clearViewOffset();   // (the title screen's framing)
   show(null);
   $('hud').hidden = false;
   $('touch').hidden = !isTouch;
@@ -1884,11 +1986,16 @@ function resume(withMouse = true) {
     b.disabled = true; b.textContent = 'Resuming…';
     resumeTimer = setTimeout(() => {
       resumeTimer = 0; b.disabled = false; b.textContent = 'Resume';
-      if (state === 'paused') start();
+      if (state === 'paused' && !document.hidden) start();
     }, wait);
     return;
   }
   start(withMouse);
+}
+function cancelResume() {
+  if (!resumeTimer) return;
+  clearTimeout(resumeTimer); resumeTimer = 0;
+  const b = $('resume-btn'); b.disabled = false; b.textContent = 'Resume';
 }
 function toggleMute() {
   muted = !muted;
@@ -2045,9 +2152,10 @@ function animateHero(dt) {
       av.subVectors(w.anchor, drawPos).applyQuaternion(heroInv);
       anim.webHand = av.x >= 0 ? 0 : 1;
     }
-    // hang from the fulcrum, facing along the travel line (each new web resets it): a backswing swings backwards
-    // instead of turning round
-    aUp.subVectors(w.pivot, drawPos).normalize().addScaledVector(UP, 0.15).normalize();
+    // hang mostly along the strand (it's what the eye sees) and partly toward the fulcrum that really swings him, facing
+    // along the travel line (each new web resets it): a backswing swings backwards instead of turning round
+    aUp.subVectors(w.pivot, drawPos).normalize().multiplyScalar(0.35);
+    aUp.addScaledVector(aw.subVectors(w.anchor, drawPos).normalize(), 0.65).addScaledVector(UP, 0.1).normalize();
     const along = p.vel.x * p.travel.x + p.vel.z * p.travel.z;
     aFwd.copy(p.vel);
     if (along < 0) aFwd.addScaledVector(p.travel, -2 * along);   // mirror the backward part forward
@@ -2160,12 +2268,12 @@ const smoothstep = t => t * t * (3 - 2 * t);
 // Vertical FOV for this window shape. fov16 is the angle a 16:9 window would get at this moment (rest..rest+speed
 // widening); the rest view keeps its horizontal angle between 52 and 105 degrees, so a portrait phone isn't a slit
 // and an ultra-wide window isn't a fisheye. Speed and the web kick zoom out from there (tangent scale), capped at
-// 108 degrees vertical and 122 horizontal.
+// 96 degrees vertical (only a portrait screen gets there: the hero stays a readable size) and 122 horizontal.
 function viewFov(fov16, kick, aspect, rest = 66) {
   const tr = Math.tan(rest * DEG / 2);
   const h = clamp(2 * Math.atan(tr * aspect), 52 * DEG, 105 * DEG);
   const t = Math.tan(h / 2) / aspect * Math.tan(fov16 * DEG / 2) / tr * kick;
-  return Math.min(2 * Math.atan(t), 108 * DEG, 2 * Math.atan(Math.tan(61 * DEG) / aspect)) / DEG;
+  return Math.min(2 * Math.atan(t), 96 * DEG, 2 * Math.atan(Math.tan(61 * DEG) / aspect)) / DEG;
 }
 
 // Camera collision: how far a sphere of radius `pad` can travel from o along dir (normalized) before it touches a
@@ -2232,7 +2340,7 @@ function camFree(o, back, maxT, pad) {
 // spin camera-relative input in circles). Pitch dips and lifts gently with the swing arc, tilts down a fast fall and
 // looks up a wall run. All of it fades out while the player steers the camera and back in 0.6-1.8 s after.
 const BASE_PITCH = -0.12;
-let wallCamT = 0, againstT = 0;
+let wallCamT = 0, againstT = 0, camTurn = 1;
 function followWeight() {
   const idle = clock - lastLook;
   return idle < 0.6 ? 0 : idle > 1.8 ? 1 : smoothstep((idle - 0.6) / 1.2);
@@ -2262,14 +2370,20 @@ function camFollow(dt) {
     const fall = clamp(-(p.vel.y + 20) / 60, 0, 1);   // falling faster than 20 m/s tilts the view down at the street
     pitchT = BASE_PITCH - 0.5 * fall; pitchK = wallCamT > 0 ? 4 : 1 + fall;
   } else if (wallCamT > 0) { pitchT = BASE_PITCH; pitchK = 4; }   // just topped out a wall run: level off
-  // at the city edge there's nowhere to go: a view facing out turns back in (mirrored off the edge)
-  const ox = Math.abs(p.pos.x) > HALF - 30 ? Math.sign(p.pos.x) : 0, oz = Math.abs(p.pos.z) > HALF - 30 ? Math.sign(p.pos.z) : 0;
-  const out = ox || oz ? (camF.x * ox + camF.z * oz) / Math.hypot(ox, oz) : 0;
-  const edgeTurn = !p.wallRun && out > 0.2;
-  if (edgeTurn) { yawT = Math.atan2(ox ? -Math.abs(camF.x) * ox : camF.x, oz ? -Math.abs(camF.z) * oz : camF.z); yawK = 2.5; }
+  else if (hs > 3) { pitchT = BASE_PITCH; pitchK = 1.5; }   // running: undo the tilt a dive or fall left (standing still keeps a zip aim)
+  // at the city edge there's nowhere to go: a view with any part facing out turns back in (mirrored off the edge); in a
+  // corner, a view more than 50 degrees off the city centre turns to face it
+  const ex = Math.abs(p.pos.x) > HALF - 30, ez = Math.abs(p.pos.z) > HALF - 30;
+  const ox = ex && camF.x * p.pos.x > 0.02, oz = ez && camF.z * p.pos.z > 0.02;
+  const corner = ex && ez, edgeTurn = !p.wallRun && (corner ? -(camF.x * p.pos.x + camF.z * p.pos.z) < 0.64 * Math.hypot(p.pos.x, p.pos.z) : ox || oz);
+  if (edgeTurn) { yawT = corner ? Math.atan2(-p.pos.x, -p.pos.z) : Math.atan2(ox ? -camF.x : camF.x, oz ? -camF.z : camF.z); yawK = 2.5; }
   if (w <= 0) return;
   if (yawT === yawT) {
-    const d = angleDiff(cam.yaw, yawT);
+    let d = angleDiff(cam.yaw, yawT);
+    // a target straight behind could be turned to either way (and rounding would flip the way every step): keep the way
+    // the last turn went, or at the city edge sweep the view inward
+    if (Math.abs(d) > Math.PI - 0.1) d = Math.abs(d) * (edgeTurn ? (camF.x * p.pos.z - camF.z * p.pos.x < 0 ? -1 : 1) : camTurn);
+    else camTurn = d < 0 ? -1 : 1;
     const fwd = edgeTurn || p.wallRun ? 1 : steering ? clamp(Math.cos(d) + reach, 0, 1) : 1;
     cam.yaw += clamp(d * (1 - Math.exp(-dt * yawK * w * fwd)), -2 * dt, 2 * dt);
   }
@@ -2301,7 +2415,10 @@ function titleCamera() {
   const y = lerp(titleY[i], titleY[(i + 1) % TITLE_N], u - Math.floor(u));
   camera.position.set(TITLE_C.x + Math.sin(a) * 430, y, TITLE_C.z + Math.cos(a) * 430);
   camera.lookAt(TITLE_C.x, 120, TITLE_C.z);
-  camera.fov = viewFov(60, 1, camera.aspect, 60); camera.updateProjectionMatrix();
+  camera.fov = viewFov(60, 1, camera.aspect, 60);
+  // a landscape screen shows the landmark in its right third, clear of the menu panel in the middle
+  if (innerHeight > 0 && innerWidth > 1.3 * innerHeight) camera.setViewOffset(innerWidth, innerHeight, -0.28 * innerWidth, 0, innerWidth, innerHeight);
+  else camera.clearViewOffset();
   sky.position.copy(camera.position);
   placeSun(titleSun, 600);
 }
@@ -2318,7 +2435,7 @@ const SHADOW_HALF = [160, 240, 340], SHADOW_UP = [75, 145], sunCenter = new V3()
 let shadowLv = 0;
 let camNdcY = CAM_NDC_Y;
 const viewDir = new V3(), camUp = new V3(), camBack = new V3(), altBack = new V3(), camOff = new V3(), camLag = new V3(), camFrame = new V3(), camAhead = new V3();
-let camTilt = 0;
+let camTilt = 0, uCap = 0.15;
 // for the view at this pitch (current yaw): its look direction into `look`, and into `back` the direction from the
 // framed point back to the camera that shows the point at (CAM_NDC_X, camNdcY)
 function aimAt(pitch, tanV, aspect, look, back) {
@@ -2339,9 +2456,10 @@ function updateCamera(dt) {
   // near-plane corner radius: the camera sphere that keeps walls out of the near plane
   const pad = 0.3 * Math.sqrt(1 + tanV * tanV * (1 + aspect * aspect)) + 0.1;
 
-  const want = 6 + Math.min(speed, 70) * 0.04 + (aspect < 1 ? (1 - aspect) * 2 : 0) + (p.wallRun ? 1.5 : 0);
+  const want = 6 + Math.min(speed, 70) * 0.04 + (p.wallRun ? 1.5 : 0);
   camFrame.copy(drawPos); camFrame.y += 0.2;
-  if (cam.snap) { camLag.copy(camFrame); cam.dist = cam.curD = want; camTilt = 0; cam.snap = false; }
+  if (!(camLag.x + camLag.y + camLag.z + cam.dist + cam.curD + camTilt < Infinity)) cam.snap = true;   // never stay NaN
+  if (cam.snap) { camLag.copy(camFrame); cam.dist = cam.curD = want; camTilt = 0; uCap = p.wallRun ? 0.03 : 0.15; cam.snap = false; }
   cam.dist = lerp(cam.dist, want, 1 - Math.exp(-dt * 3));
   camNdcY = CAM_NDC_Y + 0.2 * clamp((1 - aspect) * 2, 0, 1);
   aimAt(cam.pitch - camTilt, tanV, aspect, viewDir, camBack);
@@ -2350,7 +2468,11 @@ function updateCamera(dt) {
   // trailing to the side or up/down moves the hero about the frame, by up to 0.1 / 0.15 of the half-screen.
   camLag.lerp(camFrame, 1 - Math.exp(-dt * 7));
   camOff.subVectors(camLag, camFrame);
-  const maxS = 0.1 * tanV * aspect * cam.dist, maxU = (p.wallRun ? 0.03 : 0.15) * tanV * cam.dist;   // a wall run keeps the hero low, the wall above him in view
+  // sized for the distance the camera really is at (squeezed against a wall, an 8 m lag would throw the hero off screen);
+  // a wall run keeps the hero low, the wall above him in view (the limit eases over, so the hero doesn't hop)
+  const lagD = Math.max(0.3, Math.min(cam.dist, cam.curD));
+  uCap += ((p.wallRun ? 0.03 : 0.15) - uCap) * (1 - Math.exp(-dt * 5));
+  const maxS = 0.1 * tanV * aspect * lagD, maxU = uCap * tanV * lagD;
   const lagBack = -2 * Math.tanh((camOff.x * camF.x + camOff.z * camF.z) / 2);
   const ls = maxS * Math.tanh((camOff.x * camR.x + camOff.z * camR.z) / maxS);
   camOff.set(camR.x * ls, maxU * Math.tanh(camOff.y / maxU), camR.z * ls);
@@ -2435,6 +2557,7 @@ function simulate(dt, pad) {
       camBasis();
       moveDir.set(0, 0, 0).addScaledVector(camF, iz).addScaledVector(camR, ix);
       if (moveDir.lengthSq() > 1) moveDir.normalize();
+      if (!p.onGround && !p.wallRun) edgeSteer(moveDir);
       p.prev.copy(p.pos);
       step(STEP);
       collectTokens(p.prev, p.pos);
@@ -2452,9 +2575,8 @@ function simulate(dt, pad) {
       hudEl.tok.textContent = tokensTaken;
       mouseHint(0.1);
     }
-    updateMarker(dt);
     tipTimer -= dt;
-    if (tipTimer <= 0) { if (tipIdx < tips.length) nextTip(); else $('tip').style.opacity = 0; }
+    if (tipTimer <= 0 && tipOn) { if (tipIdx < tips.length) nextTip(); else { $('tip').style.opacity = 0; tipOn = false; } }
   }
   input.jumpPress = input.zipPress = false;
   input.lookX = input.lookY = 0;
@@ -2470,11 +2592,12 @@ function simulate(dt, pad) {
     animateHero(dt);
   }
   updateCamera(dt);
+  if (state === 'play') updateMarker(dt);
 
   // web strands stay at least 2.6 px wide: radius per metre of depth for this view
   webMat.uniforms.px.value = 1.3 * 2 * Math.tan(camera.fov * DEG / 2) / Math.max(1, innerHeight);
   // the zip ring marks a ledge a zip would launch from; a plain wall point only turns the crosshair into a ring
-  const zipOk = state === 'play' && zipTarget && !p.zip && zipTarget.point.distanceTo(p.pos) > 6;
+  const zipOk = state === 'play' && zipTarget && !p.zip && zipTarget.point.distanceTo(p.pos) > ZIP_MIN;
   zipMarker.visible = !!(zipOk && zipTarget.launch);
   if (zipMarker.visible) {
     const sc = Math.max(0.5, camera.position.distanceTo(zipTarget.show) * 0.02) * (1 + 0.06 * Math.sin(clock * 7));
