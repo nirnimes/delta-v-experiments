@@ -1348,12 +1348,17 @@ function ropeStep(pos, vel, w, travel, dt) {
   vel.y -= G * dt;
   // steering bends the swing; it adds no speed in a direction you already move fast in
   vel.addScaledVector(moveDir, 16 * dt * steerRoom(vel, moveDir, 20));
-  // steering assist: drift off the travel line is bled off and mostly handed to forward speed
-  const along = vel.x * travel.x + vel.z * travel.z;
+  // steering assist: drift off the travel line is bled off and handed to forward speed, so it turns the swing without
+  // braking it (moving against the line, it's only bled off)
+  const along = vel.x * travel.x + vel.z * travel.z, hs0 = Math.hypot(vel.x, vel.z);
   const lx = vel.x - travel.x * along, lz = vel.z - travel.z * along;
   const k = 1 - Math.exp(-ASSIST * dt), gain = Math.hypot(lx, lz) * k * 0.8;
   vel.x -= lx * k; vel.z -= lz * k;
-  if (along > 0) { vel.x += travel.x * gain; vel.z += travel.z * gain; }
+  if (along > 0) {
+    vel.x += travel.x * gain; vel.z += travel.z * gain;
+    const hs1 = Math.hypot(vel.x, vel.z);
+    if (hs1 > 0.1 && hs1 < hs0) { vel.x *= hs0 / hs1; vel.z *= hs0 / hs1; }
+  }
   // the downswing pushes toward cruise speed so chains keep flowing; well above it, the swing slowly bleeds speed
   if (vel.y < 0 && hs > 2 && hs < CRUISE) { vel.x += vel.x / hs * 12 * dt; vel.z += vel.z / hs * 12 * dt; }
   const sp = vel.length(), over = sp - CRUISE - 6;
@@ -1781,8 +1786,17 @@ function steerTravel(travel, dt) {
   const b = a + angleDiff(a, Math.atan2(moveDir.x, moveDir.z)) * (1 - Math.exp(-2.5 * dt));
   travel.set(Math.sin(b), 0, Math.cos(b));
 }
+// While swinging, the travel line also stays within TRAVEL_SPREAD of where the swing is carrying the hero. Steered
+// further off (the stick held away from the web's side, a hard mouse turn), the rope would carry him one way while the
+// assist pulls the other: it would bleed off his speed until he hung nearly still up the side of the arc. (The anchor
+// look-ahead in swingContact steers without this limit; it picked anchors as well or better in tests.)
+const TRAVEL_SPREAD = 1.05;   // 60 degrees
 function webMove(dt) {
   steerTravel(p.travel, dt);
+  if (Math.hypot(p.vel.x, p.vel.z) > 5) {
+    const h = Math.atan2(p.vel.x, p.vel.z), d = angleDiff(h, Math.atan2(p.travel.x, p.travel.z));
+    if (Math.abs(d) > TRAVEL_SPREAD) { const b = h + Math.sign(d) * TRAVEL_SPREAD; p.travel.set(Math.sin(b), 0, Math.cos(b)); }
+  }
   ropeStep(p.pos, p.vel, p.web, p.travel, dt);
 }
 // Wall run: W (into the wall) or a held swing climbs, A/D run along it, no input clings, S or a fresh swing press kicks off.
@@ -2044,8 +2058,20 @@ function toggleMute() {
   if (state === 'play') showToast(muted ? 'SOUND OFF' : 'SOUND ON');
 }
 $('start-btn').addEventListener('click', () => start());
-$('resume-btn').addEventListener('click', () => resume());
-$('mute-btn').addEventListener('click', toggleMute);
+// The pause panel's buttons get tapped with the other thumb still on the stick or Swing too, so like the on-screen
+// Pause button a touch acts on pointerup. A mouse click or the keyboard comes through 'click' (a desktop Resume must
+// run inside that click for the pointer lock), which skips the click a lone touch makes after its pointerup.
+for (const [id, fn] of [['resume-btn', () => resume()], ['mute-btn', toggleMute]]) {
+  const el = $(id);
+  let downId = null, tapAt = -1e9;
+  el.addEventListener('pointerdown', e => {
+    downId = e.pointerType === 'mouse' ? null : e.pointerId;
+    if (downId !== null) e.preventDefault();   // (no compatibility mousedown on the game once Resume has hidden the panel)
+  });
+  el.addEventListener('pointerup', e => { if (e.pointerId === downId) { downId = null; tapAt = performance.now(); fn(); } });
+  el.addEventListener('pointercancel', () => { downId = null; });
+  el.addEventListener('click', () => { if (performance.now() - tapAt > 800) fn(); });
+}
 
 // ---------------------------------------------------------------- animation
 // The body turns toward a target orientation at a capped rate (smoothly, never snapping round), and every joint eases
@@ -2393,12 +2419,13 @@ function camFollow(dt) {
   let yawT = NaN, yawK = 0, reach = 0, pitchT = NaN, pitchK = 0;
   if (p.wallRun) {
     // turn to within 25 degrees of square to the wall (unless A/D is held: turning would change what it does) and
-    // look up it while climbing
+    // look up it while climbing, steeply enough (up to 1.1 rad) that the top of a tall tower and the zip ring on it
+    // are in view instead of a screen of windows
     const n = p.wallRun.n, face = Math.atan2(-n.x, -n.z), off = angleDiff(face, cam.yaw);
     if (Math.abs(off) > 0.44 && (!steering || Math.abs(moveDir.x * camR.x + moveDir.z * camR.z) < 0.4)) { yawT = face + Math.sign(off) * 0.44; yawK = 2.5; }
     // nearing the top, level off in time to look over the roof edge (the camera can't stay below a ledge)
     const top = clamp((p.wallRun.box.maxY - p.pos.y) / (2 + 0.6 * Math.max(0, p.vel.y)), 0, 1);
-    pitchT = lerp(BASE_PITCH, 0.15 + 0.5 * clamp(p.vel.y / 15, 0, 1), top); pitchK = top < 1 ? 4 : 2.5;
+    pitchT = lerp(BASE_PITCH, 0.15 + 0.95 * clamp(p.vel.y / 15, 0, 1), top); pitchK = top < 1 ? 4 : 2.5;
     wallCamT = 1.2;
   } else if (p.web) {
     // the travel line, unless the hero has been moving against it for a while (thrown back off a wall or the city edge)
@@ -2429,11 +2456,15 @@ function camFollow(dt) {
   }
   if (pitchT === pitchT) cam.pitch += (pitchT - cam.pitch) * (1 - Math.exp(-dt * pitchK * w));
 }
-function applyLook() {
+// how far up the view may look: 0.75 rad, or 1.15 on a wall run (camFollow looks up a climb); afterwards the limit
+// comes back down at 1 rad/s instead of snapping the view down
+let lookCap = 0.75;
+function applyLook(dt) {
   const sens = 0.0022;
   if (input.lookX || input.lookY) lastLook = clock;
   cam.yaw -= input.lookX * sens;
-  cam.pitch = clamp(cam.pitch - input.lookY * sens, -1.15, 0.75);
+  lookCap = p.wallRun ? 1.15 : Math.max(0.75, Math.min(lookCap, cam.pitch) - dt);
+  cam.pitch = clamp(cam.pitch - input.lookY * sens, -1.15, lookCap);
 }
 
 // title: a slow orbit round the landmark, 430 m out and 230 m up, raised to stay 30 m over any tower near its path
@@ -2464,25 +2495,26 @@ function titleCamera() {
 }
 
 // Chase camera. The hero's chest is framed a little right of and below the centre (lower-middle third, the crosshair
-// stays clear), at that same screen spot whatever the distance or FOV. The framed point trails the hero a little at
+// stays clear; left of it on a portrait screen), at that same screen spot whatever the distance or FOV. The framed point trails the hero a little at
 // speed, so the hero moves in the frame along the swing arc and pulls ahead when accelerating. Distance grows with
 // speed; each new web kicks the FOV out with a matching dolly in. Collision casts a sphere the size of the near plane
 // back from the hero: it pulls in at once when something comes between, eases in early when the hero's path is about
 // to bring something between, and springs back out slowly.
-// the hero's spot on screen (NDC); a portrait screen raises it to clear the touch buttons in the bottom corner
-const CAM_NDC_X = 0.1, CAM_NDC_Y = -0.3;
+// the hero's spot on screen (NDC). A portrait screen raises it to clear the touch buttons in the bottom corner, and
+// moves it left of the centre: a narrow screen's 0.1 is only ~20 px, and the crosshair would sit on his chest or web arm.
+const CAM_NDC_X = 0.1, CAM_NDC_Y = -0.3, PORTRAIT_NDC_X = -0.22;
 const SHADOW_HALF = [160, 240, 340], SHADOW_UP = [75, 145], sunCenter = new V3();
 let shadowLv = 0;
-let camNdcY = CAM_NDC_Y;
+let camNdcX = CAM_NDC_X, camNdcY = CAM_NDC_Y;
 const viewDir = new V3(), camUp = new V3(), camBack = new V3(), altBack = new V3(), camOff = new V3(), camLag = new V3(), camFrame = new V3(), camAhead = new V3(), camGo = new V3();
 let camTilt = 0, uCap = 0.15;
 // for the view at this pitch (current yaw): its look direction into `look`, and into `back` the direction from the
-// framed point back to the camera that shows the point at (CAM_NDC_X, camNdcY)
+// framed point back to the camera that shows the point at (camNdcX, camNdcY)
 function aimAt(pitch, tanV, aspect, look, back) {
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
   look.set(camF.x * cp, sp, camF.z * cp);
   camUp.set(-sp * camF.x, cp, -sp * camF.z);
-  back.copy(look).addScaledVector(camR, CAM_NDC_X * tanV * aspect).addScaledVector(camUp, camNdcY * tanV).normalize().negate();
+  back.copy(look).addScaledVector(camR, camNdcX * tanV * aspect).addScaledVector(camUp, camNdcY * tanV).normalize().negate();
 }
 function updateCamera(dt) {
   camBasis();
@@ -2502,6 +2534,7 @@ function updateCamera(dt) {
   if (!(camLag.x + camLag.y + camLag.z + cam.dist + cam.curD + camTilt < Infinity)) cam.snap = true;   // never stay NaN
   if (cam.snap) { camLag.copy(camFrame); cam.dist = cam.curD = want; camTilt = 0; uCap = p.wallRun ? 0.03 : 0.15; cam.snap = false; }
   cam.dist = lerp(cam.dist, want, 1 - Math.exp(-dt * 3));
+  camNdcX = lerp(CAM_NDC_X, PORTRAIT_NDC_X, clamp((1 - aspect) / 0.4, 0, 1));
   camNdcY = CAM_NDC_Y + 0.2 * clamp((1 - aspect) * 2, 0, 1);
   aimAt(cam.pitch - camTilt, tanV, aspect, viewDir, camBack);
 
@@ -2582,7 +2615,7 @@ function simulate(dt, pad) {
 
   if (state === 'play') {
     edgeLook(dt);
-    applyLook();
+    applyLook(dt);
     let ix = 0, iz = 0;
     if (keys.has('KeyW') || keys.has('ArrowUp')) iz += 1;
     if (keys.has('KeyS') || keys.has('ArrowDown')) iz -= 1;
