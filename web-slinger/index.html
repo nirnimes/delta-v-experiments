@@ -1008,15 +1008,17 @@ function spawn() {
   // look along x toward the landmark, turned a little toward the street on the landmark's side
   teleport(at, new V3(), Math.atan2(sx, 0.35 * sz), 0.05);
 }
-// The last three tokens hang over the street the spawn looks down, 70, 140 and 210 m out at swing height: a target
-// in view from the first second, and a trail that leads a first swing chain toward downtown.
+// The last three tokens hang over the street the spawn looks down, 70, 140 and 210 m out at swing height, each 4 m
+// higher than the last as a first chain climbs: a target in view from the first second, and a trail that leads that
+// chain toward downtown.
 function addRouteTokens() {
   const fx = Math.sin(cam.yaw), fz = Math.cos(cam.yaw), alongX = Math.abs(fx) > Math.abs(fz);
   const lat = alongX ? fz : fx, from = alongX ? p.pos.z : p.pos.x;   // the street on the side the view leans toward
   const k = (from + HALF) / P, street = -HALF + (lat > 0 ? Math.ceil(k) : Math.floor(k)) * P;
   for (let i = 1; i <= 3; i++) {
     const a = clamp((alongX ? p.pos.x : p.pos.z) + Math.sign(alongX ? fx : fz) * 70 * i, -HALF + 20, HALF - 20);
-    const pt = alongX ? new V3(a, p.pos.y - 2, street) : new V3(street, p.pos.y - 2, a);
+    const y = p.pos.y - 6 + 4 * i;
+    const pt = alongX ? new V3(a, y, street) : new V3(street, y, a);
     while (sphereHits(pt, 3) || tokens.some(t => t.pos.distanceTo(pt) < 10)) pt.y += 6;
     addToken(pt);
   }
@@ -1788,11 +1790,14 @@ function steerTravel(travel, dt) {
 }
 // While swinging, the travel line also stays within TRAVEL_SPREAD of where the swing is carrying the hero. Steered
 // further off (the stick held away from the web's side, a hard mouse turn), the rope would carry him one way while the
-// assist pulls the other: it would bleed off his speed until he hung nearly still up the side of the arc. (The anchor
-// look-ahead in swingContact steers without this limit; it picked anchors as well or better in tests.)
+// assist pulls the other: it would bleed off his speed until he hung nearly still up the side of the arc. Near the city
+// edge the line first loses its part pointing out of the city (edgeAim), so a swing out toward the edge turns along it
+// at speed instead of carrying him into the boundary. (The anchor look-ahead in swingContact steers without either;
+// with the 60 degree limit in it too, chains measured worse.)
 const TRAVEL_SPREAD = 1.05;   // 60 degrees
 function webMove(dt) {
   steerTravel(p.travel, dt);
+  edgeAim(p.travel);
   if (Math.hypot(p.vel.x, p.vel.z) > 5) {
     const h = Math.atan2(p.vel.x, p.vel.z), d = angleDiff(h, Math.atan2(p.travel.x, p.travel.z));
     if (Math.abs(d) > TRAVEL_SPREAD) { const b = h + Math.sign(d) * TRAVEL_SPREAD; p.travel.set(Math.sin(b), 0, Math.cos(b)); }
@@ -1917,15 +1922,18 @@ function step(dt) {
   }
 }
 
+// A token is picked up within TOKEN_R of its beacon's axis, from TOKEN_BELOW under it to TOKEN_ABOVE up the beacon:
+// flying through the foot of the light column takes it, as the beacon promises.
+const TOKEN_R = 3.5, TOKEN_BELOW = 3, TOKEN_ABOVE = 12;
 function collectTokens(a, b) {
-  // swept test along this step's motion, so fast passes can't skip over a token
-  const sx = b.x - a.x, sy = b.y - a.y, sz = b.z - a.z, L2 = sx * sx + sy * sy + sz * sz;
+  // swept along this step's motion (at its closest pass to the axis), so fast passes can't skip over a token
+  const sx = b.x - a.x, sz = b.z - a.z, L2 = sx * sx + sz * sz;
   for (const t of tokens) {
     if (t.taken) continue;
-    const ox = t.pos.x - a.x, oy = t.pos.y - a.y, oz = t.pos.z - a.z;
-    const u = L2 > 1e-9 ? clamp((ox * sx + oy * sy + oz * sz) / L2, 0, 1) : 0;
-    const dx = ox - sx * u, dy = oy - sy * u, dz = oz - sz * u;
-    if (dx * dx + dy * dy + dz * dz > 9) continue;
+    const ox = t.pos.x - a.x, oz = t.pos.z - a.z;
+    const u = L2 > 1e-9 ? clamp((ox * sx + oz * sz) / L2, 0, 1) : 0;
+    const dx = ox - sx * u, dz = oz - sz * u, dy = a.y + (b.y - a.y) * u - t.pos.y;
+    if (dx * dx + dz * dz > TOKEN_R * TOKEN_R || dy < -TOKEN_BELOW || dy > TOKEN_ABOVE) continue;
     t.taken = true; t.mesh.visible = false; beaconOff(t); tokensTaken++;
     chime();
     showToast(tokensTaken === tokens.length ? 'EVERY TOKEN FOUND' : `TOKEN ${tokensTaken} / ${tokens.length}`);
@@ -1934,7 +1942,19 @@ function collectTokens(a, b) {
 
 // ---------------------------------------------------------------- HUD helpers
 let toastTimer = 0;
-function showToast(t) { const el = $('toast'); el.textContent = t; el.style.opacity = 1; toastTimer = 1.1; }
+function showToast(t) { const el = $('toast'); el.textContent = t; el.style.opacity = 1; toastTimer = 1.1; placeToast(); }
+// On touch the tip panel sits at the top left, where a toast would be drawn under it. While a tip shows, a toast that
+// would overlap it goes above it if it fits between the menu buttons and the readout there (landscape), else below it.
+function placeToast() {
+  const el = $('toast');
+  el.style.top = '';
+  if (!isTouch || !tipOn) return;
+  const r = el.getBoundingClientRect(), tip = $('tip').getBoundingClientRect();
+  if (r.top >= tip.bottom || r.bottom <= tip.top || r.left >= tip.right || r.right <= tip.left) return;
+  const menu = document.querySelector('.tmenu').getBoundingClientRect();
+  const readout = document.querySelector('.readout').getBoundingClientRect();
+  el.style.top = (r.left > menu.right && r.right < readout.left ? tip.top - 6 - r.height : tip.bottom + 8) + 'px';
+}
 const tips = isTouch ? [
   'Hold <kbd>Swing</kbd> to swing. Keep holding and webs chain automatically.',
   'Tap <kbd>Jump</kbd> just past the low point of a swing for a swing jump, or slide your thumb from <kbd>Swing</kbd> onto <kbd>Jump</kbd>.',
@@ -2004,7 +2024,10 @@ function updateMarker(dt) {
   if (dist !== m.metres) { m.metres = dist; m.dist.textContent = dist + ' m'; }
 }
 let tipIdx = 0, tipTimer = 0, tipOn = false;
-function nextTip() { $('tip').innerHTML = tips[tipIdx]; $('tip').style.opacity = 1; tipIdx++; tipTimer = 7; tipOn = true; }
+function nextTip() {
+  $('tip').innerHTML = tips[tipIdx]; $('tip').style.opacity = 1; tipIdx++; tipTimer = 7; tipOn = true;
+  if (toastTimer > 0) placeToast();   // (the new tip can be taller)
+}
 
 // ---------------------------------------------------------------- states
 let state = 'title', resumeTimer = 0;
@@ -2454,7 +2477,9 @@ function camFollow(dt) {
     const fwd = edgeTurn || p.wallRun ? 1 : steering ? clamp(Math.cos(d) + reach, 0, 1) : 1;
     cam.yaw += clamp(d * (1 - Math.exp(-dt * yawK * w * fwd)), -2 * dt, 2 * dt);
   }
-  if (pitchT === pitchT) cam.pitch += (pitchT - cam.pitch) * (1 - Math.exp(-dt * pitchK * w));
+  // (at most 2 rad/s, as for yaw: a wall run's steep look up, and the drop back level when it ends, would otherwise
+  // swing the camera round the hero at over 30 m/s)
+  if (pitchT === pitchT) cam.pitch += clamp((pitchT - cam.pitch) * (1 - Math.exp(-dt * pitchK * w)), -2 * dt, 2 * dt);
 }
 // how far up the view may look: 0.75 rad, or 1.15 on a wall run (camFollow looks up a climb); afterwards the limit
 // comes back down at 1 rad/s instead of snapping the view down
@@ -2463,7 +2488,7 @@ function applyLook(dt) {
   const sens = 0.0022;
   if (input.lookX || input.lookY) lastLook = clock;
   cam.yaw -= input.lookX * sens;
-  lookCap = p.wallRun ? 1.15 : Math.max(0.75, Math.min(lookCap, cam.pitch) - dt);
+  lookCap = p.wallRun ? 1.15 : Math.max(0.75, lookCap - dt);
   cam.pitch = clamp(cam.pitch - input.lookY * sens, -1.15, lookCap);
 }
 
@@ -2495,13 +2520,13 @@ function titleCamera() {
 }
 
 // Chase camera. The hero's chest is framed a little right of and below the centre (lower-middle third, the crosshair
-// stays clear; left of it on a portrait screen), at that same screen spot whatever the distance or FOV. The framed point trails the hero a little at
-// speed, so the hero moves in the frame along the swing arc and pulls ahead when accelerating. Distance grows with
-// speed; each new web kicks the FOV out with a matching dolly in. Collision casts a sphere the size of the near plane
-// back from the hero: it pulls in at once when something comes between, eases in early when the hero's path is about
-// to bring something between, and springs back out slowly.
+// stays clear; left of it on a portrait screen), at that same screen spot whatever the distance or FOV. The framed
+// point trails the hero a little at speed, so the hero moves in the frame along the swing arc and pulls ahead when
+// accelerating. Distance grows with speed; each new web kicks the FOV out with a matching dolly in. Collision casts a
+// sphere the size of the near plane back from the hero: it pulls in at once when something comes between, eases in
+// early when the hero's path is about to bring something between, and springs back out slowly.
 // the hero's spot on screen (NDC). A portrait screen raises it to clear the touch buttons in the bottom corner, and
-// moves it left of the centre: a narrow screen's 0.1 is only ~20 px, and the crosshair would sit on his chest or web arm.
+// moves it left of the centre: there 0.1 is only ~20 px, and the crosshair would sit on his chest or web arm.
 const CAM_NDC_X = 0.1, CAM_NDC_Y = -0.3, PORTRAIT_NDC_X = -0.22;
 const SHADOW_HALF = [160, 240, 340], SHADOW_UP = [75, 145], sunCenter = new V3();
 let shadowLv = 0;
