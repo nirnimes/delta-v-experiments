@@ -1,0 +1,2785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Web Slinger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Saira+Condensed:wght@500;700&display=swap">
+<style>
+/* Layout: full-bleed 3D view; speed and altitude HUD bottom-right, tips bottom-left; menus are a dark glass panel with a red edge */
+:root {
+  --ink: #0a0e1c;
+  --glass: rgba(10, 14, 28, 0.82);
+  --paper: #f4efe6;
+  --muted: #a9b0c4;
+  --red: #e2232f;
+  --gold: #ffc35a;
+  --font-display: 'Anton', 'Impact', 'Arial Narrow Bold', sans-serif;
+  --font-ui: 'Saira Condensed', 'Arial Narrow', system-ui, sans-serif;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; overflow: hidden; }
+body { background: var(--ink); color: var(--paper); font-family: var(--font-ui); -webkit-user-select: none; user-select: none; }
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#vignette {
+  position: fixed; inset: 0; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(10, 14, 28, 0.75) 100%);
+}
+#hud { position: fixed; inset: 0; pointer-events: none; }
+.readout { position: absolute; right: 24px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); text-align: right; display: grid; gap: 2px; }
+.speed { font-family: var(--font-display); font-size: clamp(44px, 7vw, 72px); line-height: .9; letter-spacing: 1px; font-variant-numeric: tabular-nums; text-shadow: 0 2px 12px rgba(0,0,0,.45); }
+.speed small { font-family: var(--font-ui); font-size: 18px; font-weight: 700; letter-spacing: .12em; margin-left: 6px; color: var(--muted); }
+.meta { font-size: 18px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--paper); text-shadow: 0 1px 6px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; }
+.meta b { color: var(--gold); font-weight: 700; }
+#crosshair { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(244, 239, 230, .75); box-shadow: 0 0 0 2px rgba(10,14,28,.4); }
+#crosshair.zip { width: 14px; height: 14px; margin: -9px 0 0 -9px; background: transparent; border: 2px solid rgba(244, 239, 230, .9); }
+#tip {
+  position: absolute; left: 24px; bottom: calc(22px + env(safe-area-inset-bottom, 0px)); max-width: min(460px, calc(100% - 290px)); box-sizing: border-box;
+  background: var(--glass); border-left: 4px solid var(--red); padding: 8px 14px; font-size: 17px; line-height: 1.3;
+  transition: opacity .6s;
+}
+/* narrow windows: the tip goes above the speed readout instead of beside it */
+@media (max-width: 640px) { #tip { bottom: calc(110px + env(safe-area-inset-bottom, 0px)); max-width: calc(100% - 48px); } }
+#tip kbd, .panel kbd { font-family: var(--font-ui); font-weight: 700; background: var(--paper); color: var(--ink); padding: 0 6px; border-radius: 3px; }
+#toast { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); font-family: var(--font-display); font-size: clamp(26px, 4vw, 40px); letter-spacing: 2px; color: var(--gold); text-shadow: 0 2px 14px rgba(0,0,0,.5); opacity: 0; transition: opacity .3s; white-space: nowrap; }
+/* desktop without a captured mouse: what a click will do */
+#mouse-hint { position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); font-size: 15px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--paper); background: var(--glass); padding: 3px 10px; white-space: nowrap; }
+/* nearest-token marker: sits over the token, or on the screen edge with its arrow pointing the way */
+#marker { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
+#marker .gem { position: absolute; left: -9px; top: -9px; width: 12px; height: 12px; border: 3px solid var(--gold); background: rgba(255,195,90,.35); transform: rotate(45deg); box-shadow: 0 0 0 2px rgba(10,14,28,.6), 0 0 12px rgba(255,170,60,.8); }
+#marker .arrow { position: absolute; left: 0; top: 0; width: 0; height: 0; display: none; }
+#marker .arrow::before { content: ''; position: absolute; left: 14px; top: -9px; border: 9px solid transparent; border-left: 14px solid var(--gold); filter: drop-shadow(0 0 2px rgba(10,14,28,.9)); }
+#marker.edge .arrow { display: block; }
+#marker span { position: absolute; left: 0; top: 15px; transform: translateX(-50%); font-size: 14px; font-weight: 700; letter-spacing: .06em; color: var(--gold); background: rgba(10,14,28,.6); padding: 0 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.overlay { position: fixed; inset: 0; display: grid; padding: 16px; background: linear-gradient(180deg, rgba(10,14,28,.15), rgba(10,14,28,.65)); overflow-y: auto; }
+.panel {
+  width: min(560px, 100%); box-sizing: border-box; background: var(--glass); backdrop-filter: blur(8px); margin: auto;   /* auto margins centre it and still let a tall panel scroll from its top */
+  border-top: 5px solid var(--red); padding: 26px 28px 28px; display: grid; gap: 16px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45);
+}
+.eyebrow { font-size: 15px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: var(--gold); }
+.panel h1, .panel h2 { font-family: var(--font-display); font-weight: 400; margin: 0; line-height: .92; letter-spacing: 1px; text-transform: uppercase; text-wrap: balance; }
+.panel h1 { font-size: clamp(54px, 12vw, 96px); }
+.panel h1 span { color: var(--red); }
+.panel h2 { font-size: clamp(40px, 9vw, 64px); }
+.controls { display: grid; grid-template-columns: max-content 1fr; gap: 7px 16px; margin: 0; font-size: 17px; line-height: 1.3; }
+.controls dt { font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.controls dd { margin: 0; min-width: 0; }
+.note { margin: 0; color: var(--muted); font-size: 16px; line-height: 1.4; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+/* the Start button stays in view at any window height: a title panel taller than the window scrolls under it */
+#title-screen .actions { position: sticky; bottom: -16px; margin: 0 -28px -28px; padding: 12px 28px 28px; background: var(--glass); }
+button.primary {
+  font-family: var(--font-display); font-size: 26px; letter-spacing: 2px; text-transform: uppercase;
+  background: var(--red); color: var(--paper); border: 0; padding: 10px 28px 8px; cursor: pointer;
+  clip-path: polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%); transition: filter .15s, transform .1s;
+}
+button.primary:hover { filter: brightness(1.12); }
+button.primary:active { transform: translateY(2px); }
+button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+button.secondary { font-family: var(--font-ui); font-size: 17px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; background: transparent; color: var(--paper); border: 2px solid rgba(244,239,230,.4); padding: 8px 16px; cursor: pointer; }
+button.secondary:hover { border-color: var(--paper); }
+button:disabled { opacity: .6; cursor: default; }
+#load-error { color: var(--gold); font-weight: 700; }
+/* the title and pause panels show keyboard or touch wording to match the device */
+body.touch .kb, body:not(.touch) .tc { display: none; }
+
+#touch { position: fixed; inset: 0; pointer-events: none; }
+/* floating stick: shown at its home spot as a hint; a thumb anywhere on the left side centres it under the thumb */
+#stick { position: absolute; left: 28px; bottom: calc(28px + env(safe-area-inset-bottom, 0px)); width: 130px; height: 130px; border-radius: 50%; background: rgba(244,239,230,.12); border: 2px solid rgba(244,239,230,.3); pointer-events: auto; touch-action: none; opacity: .6; }
+#stick.on { opacity: 1; }
+#knob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%; background: rgba(244,239,230,.55); }
+.tbtns { position: absolute; right: calc(20px + env(safe-area-inset-right, 0px)); bottom: calc(28px + env(safe-area-inset-bottom, 0px)); display: grid; grid-template-columns: repeat(2, 72px); gap: 12px; pointer-events: auto; touch-action: none; }
+.tbtns button { width: 72px; height: 72px; border-radius: 50%; border: 2px solid rgba(244,239,230,.45); background: rgba(10,14,28,.55); color: var(--paper); font-family: var(--font-ui); font-weight: 700; font-size: 15px; letter-spacing: .06em; text-transform: uppercase; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.tbtns button[data-b="swing"] { background: rgba(226,35,47,.8); border-color: var(--red); }
+.tbtns button.on { transform: scale(.92); filter: brightness(1.3); }
+/* very narrow phones: the buttons sit above the stick's corner */
+@media (max-width: 340px) { .tbtns { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); } }
+.tmenu { position: absolute; left: calc(12px + env(safe-area-inset-left, 0px)); top: calc(12px + env(safe-area-inset-top, 0px)); display: flex; gap: 8px; pointer-events: auto; }
+.tmenu button { width: 44px; height: 44px; border-radius: 50%; border: 2px solid rgba(244,239,230,.4); background: rgba(10,14,28,.55); color: var(--paper); font-family: var(--font-ui); font-weight: 700; font-size: 15px; padding: 0; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.tmenu button svg { width: 20px; height: 20px; display: block; margin: auto; fill: currentColor; }
+.tmenu button[aria-pressed="true"] { color: var(--gold); border-color: var(--gold); }
+.tmenu .x, .tmenu [aria-pressed="true"] .wave { display: none; }
+.tmenu [aria-pressed="true"] .x { display: inline; }
+body.touch #tip { left: calc(12px + env(safe-area-inset-left, 0px)); top: calc(104px + env(safe-area-inset-top, 0px)); bottom: auto; max-width: min(380px, calc(100% - 24px)); font-size: 15px; }
+body.touch .readout { bottom: auto; right: calc(16px + env(safe-area-inset-right, 0px)); top: calc(12px + env(safe-area-inset-top, 0px)); }
+body.touch .speed { font-size: 40px; }
+body.touch .meta { font-size: 15px; }
+/* short landscape phones: a compact title panel */
+@media (max-height: 520px) {
+  .panel { padding: 16px 20px 18px; gap: 10px; }
+  .panel h1 { font-size: 46px; }
+  .panel h2 { font-size: 40px; }
+  .controls { font-size: 14px; gap: 4px 12px; }
+  .note { font-size: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { #tip, #toast, button.primary { transition: none; } }
+</style>
+</head>
+<body>
+<div id="vignette"></div>
+<div id="hud" hidden>
+  <div id="crosshair"></div>
+  <div id="marker" hidden><div class="arrow"></div><div class="gem"></div><span id="marker-dist"></span></div>
+  <div id="mouse-hint" hidden></div>
+  <div id="toast"></div>
+  <div id="tip"></div>
+  <div class="readout">
+    <div class="speed"><span id="spd">0</span><small>KM/H</small></div>
+    <div class="meta"><span id="alt">0</span> m up · <b id="tok">0</b> / <span id="tok-total">0</span> tokens</div>
+  </div>
+</div>
+<div id="touch" hidden>
+  <div id="stick"><div id="knob"></div></div>
+  <div class="tbtns">
+    <button type="button" data-b="zip">Zip</button>
+    <button type="button" data-b="dive">Dive</button>
+    <button type="button" data-b="jump">Jump</button>
+    <button type="button" data-b="swing">Swing</button>
+  </div>
+  <div class="tmenu">
+    <button type="button" id="t-pause" aria-label="Pause"><svg viewBox="0 0 20 20"><rect x="4" y="3" width="4" height="14"/><rect x="12" y="3" width="4" height="14"/></svg></button>
+    <button type="button" id="t-mute" aria-label="Mute" aria-pressed="false"><svg viewBox="0 0 20 20"><path d="M2 7h4l5-4v14l-5-4H2z"/><path class="wave" d="M13.5 6.5a5 5 0 0 1 0 7l-1-1a3.6 3.6 0 0 0 0-5z"/><path class="x" d="M12.6 7.4l1-1 2.1 2.1 2.1-2.1 1 1-2.1 2.1 2.1 2.1-1 1-2.1-2.1-2.1 2.1-1-1 2.1-2.1z"/></svg></button>
+  </div>
+</div>
+
+<div class="overlay" id="title-screen">
+  <div class="panel">
+    <span class="eyebrow">Golden hour · Midtown</span>
+    <h1>Web <span>Slinger</span></h1>
+    <dl class="controls">
+      <dt>Swing</dt><dd><span class="kb">Hold <kbd>Left click</kbd> or <kbd>Shift</kbd>.</span><span class="tc">Hold <kbd>Swing</kbd>.</span> Webs find buildings for you. Keep holding to chain swings.</dd>
+      <dt>Jump</dt><dd><span class="kb"><kbd>Space</kbd>.</span><span class="tc"><kbd>Jump</kbd>.</span> Tap it just past the low point of a swing for a big boost<span class="tc">, or slide your thumb from Swing onto Jump</span>. In the air it web-zips you forward.</dd>
+      <dt>Move</dt><dd><span class="kb"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> steer · mouse looks</span><span class="tc">Left thumb steers (anywhere on the left half) · drag the right side to look</span> · steer into a wall to run up it</dd>
+      <dt>Zip</dt><dd><span class="kb"><kbd>Right click</kbd> or <kbd>E</kbd></span><span class="tc"><kbd>Zip</kbd></span> pulls you to the spot under the centre dot. At a ledge, tap Jump as you arrive to launch.</dd>
+      <dt>Dive</dt><dd>Hold <span class="kb"><kbd>C</kbd></span><span class="tc"><kbd>Dive</kbd></span> while falling to build speed for the next swing.</dd>
+      <dt class="kb">Gamepad</dt><dd class="kb">R2 swing · A / ✕ jump · L2 zip · B / ◯ dive · Start pauses</dd>
+      <dt class="kb">Menu</dt><dd class="kb"><kbd>P</kbd> or <kbd>Esc</kbd> pauses · <kbd>M</kbd> mutes</dd>
+    </dl>
+    <p class="note">Collect the gold tokens over rooftops and intersections: the gold marker always points to the nearest one. There's no way to die, so experiment.</p>
+    <p id="load-error" hidden>The 3D engine didn't load. Check your connection and reload the page.</p>
+    <div class="actions"><button class="primary" id="start-btn" type="button">Start swinging</button></div>
+  </div>
+</div>
+
+<div class="overlay" id="pause-screen" hidden>
+  <div class="panel">
+    <span class="eyebrow">Paused</span>
+    <h2>Take a breather</h2>
+    <p class="note" id="pause-stats"></p>
+    <div class="actions">
+      <button class="primary" id="resume-btn" type="button">Resume</button>
+      <button class="secondary" id="mute-btn" type="button">Sound on</button>
+    </div>
+    <p class="note kb"><kbd>P</kbd> or <kbd>Enter</kbd> resumes · <kbd>M</kbd> mutes</p>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+if (!window.THREE) { $('load-error').hidden = false; $('start-btn').disabled = true; return; }
+const V3 = THREE.Vector3;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// ---------------------------------------------------------------- renderer
+const isTouch = matchMedia('(pointer: coarse)').matches;
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+} catch (err) {
+  $('load-error').textContent = "Your browser couldn't start WebGL, so the city can't be drawn. Turn on hardware acceleration in your browser's settings (or try another browser), then reload.";
+  $('load-error').hidden = false; $('start-btn').disabled = true;
+  return;
+}
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+// phones get the cheaper filter (the type is fixed from the first frame: changing it would recompile every material)
+renderer.shadowMap.type = isTouch ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+renderer.domElement.id = 'view';
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog('#eaa57c', 220, 1300);
+// a collapsed panel or iframe can report a 0 x 0 window: keep the last real shape (a 0 or infinite aspect would turn
+// the camera maths to NaN)
+const viewAspect = fallback => innerWidth > 0 && innerHeight > 0 ? Math.min(Math.max(innerWidth / innerHeight, 0.2), 6) : fallback;
+const camera = new THREE.PerspectiveCamera(68, viewAspect(16 / 9), 0.3, 4000);
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = viewAspect(camera.aspect);
+  camera.updateProjectionMatrix();
+});
+
+// ---------------------------------------------------------------- sky + light
+const SUN = new V3(-0.55, 0.22, -0.8).normalize();
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(3000, 32, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { sunDir: { value: SUN } },
+    vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `uniform vec3 sunDir; varying vec3 vDir;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
+      void main(){
+        vec3 d = normalize(vDir); float h = d.y;
+        vec3 zen = vec3(0.17, 0.29, 0.55), mid = vec3(0.62, 0.58, 0.70), hor = vec3(0.92, 0.65, 0.49);
+        vec3 c = mix(hor, mid, smoothstep(0.0, 0.2, h));
+        c = mix(c, zen, smoothstep(0.18, 0.75, h));
+        c = mix(c, vec3(0.55, 0.42, 0.40), smoothstep(0.0, -0.25, h));
+        float s = max(dot(d, sunDir), 0.0);
+        c += vec3(1.0, 0.62, 0.32) * pow(s, 6.0) * 0.45 + vec3(1.0, 0.7, 0.4) * pow(s, 300.0) * 0.6;
+        // thin streaks of cloud on a flat layer, lit pink-gold toward the sun and lilac away from it
+        vec2 q = d.xz / max(h, 0.04) * vec2(0.9, 2.6) + vec2(3.0, 1.0);
+        float n = noise(q) * 0.55 + noise(q * 2.3 + 7.0) * 0.3 + noise(q * 5.1 + 3.0) * 0.15;
+        float cl = smoothstep(0.52, 0.8, n) * smoothstep(0.02, 0.1, h) * (1.0 - smoothstep(0.35, 0.7, h));
+        c = mix(c, mix(vec3(0.72, 0.6, 0.72), vec3(1.0, 0.72, 0.5), pow(s, 3.0)), cl * 0.7);
+        c += vec3(1.0, 0.95, 0.8) * smoothstep(0.99965, 0.9999, s);   // the sun's disc, about 1.4 degrees across
+        // c is a display colour: decode it to linear, then encode for the target (the screen, or the environment
+        // map's RGBE when the sky is captured for reflections)
+        gl_FragColor = linearToOutputTexel(vec4(pow(c, vec3(2.2)), 1.0));
+      }`
+  })
+);
+sky.renderOrder = -1;
+scene.add(sky);
+// image-based light: the sky, prefiltered per roughness, lights and reflects in every standard material (window
+// glass mirrors the sunset)
+{
+  const pmrem = new THREE.PMREMGenerator(renderer), envScene = new THREE.Scene();
+  envScene.add(new THREE.Mesh(sky.geometry, sky.material));
+  scene.environment = pmrem.fromScene(envScene, 0, 1, 4000).texture;
+  pmrem.dispose();
+}
+
+const hemi = new THREE.HemisphereLight('#bcc9ff', '#7a5a48', 0.35);
+const sun = new THREE.DirectionalLight('#ffc591', 2.3);
+sun.castShadow = true;
+// a 4096 map where the GPU allows it (not on phones), so one map can cover a wide area sharply
+const SHADOW_MAP = !isTouch && renderer.capabilities.maxTextureSize >= 8192 ? 4096 : 2048;
+let shadowSize = SHADOW_MAP;   // the adaptive quality can halve it (see setQuality)
+sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
+Object.assign(sun.shadow.camera, { near: 1, far: 2200 });
+sun.shadow.bias = -0.0001;
+scene.add(hemi, sun, sun.target);
+// Shadows, cascade-lite: one map whose square follows the view. It's snapped to whole texels in light space so its
+// edges don't crawl as it moves, and it is wider the higher the view (the title shot covers the whole city).
+// The light sits 1400 m up-sun so the long golden-hour shadows of towers far toward the sun still reach the view.
+const SUN_LX = new V3().crossVectors(new V3(0, 1, 0), SUN).normalize(), SUN_LY = new V3().crossVectors(SUN, SUN_LX);
+const sunAt = new V3();
+function placeSun(center, half) {
+  const c = sun.shadow.camera, texel = 2 * half / shadowSize;
+  if (c.right !== half) {
+    c.left = c.bottom = -half; c.right = c.top = half; c.updateProjectionMatrix();
+    sun.shadow.normalBias = Math.max(0.12, texel * 3);
+  }
+  const u = Math.round(center.dot(SUN_LX) / texel) * texel, v = Math.round(center.dot(SUN_LY) / texel) * texel;
+  sunAt.copy(SUN_LX).multiplyScalar(u).addScaledVector(SUN_LY, v).addScaledVector(SUN, center.dot(SUN));
+  sun.target.position.copy(sunAt);
+  sun.position.copy(sunAt).addScaledVector(SUN, 1400);
+}
+
+// ---------------------------------------------------------------- quality
+// Rungs of render quality, lowest first: the pixel ratio climbs to the old fixed cap (1.5, or the screen's own ratio),
+// and below the lowest pixel ratio the shadow map halves, down to 1024. Phones start no higher than a 1.25 pixel ratio.
+// While playing, a smoothed frame time over 24 ms for 2 s drops a rung and one under 18 ms for 6 s climbs one. A drop
+// that doesn't make frames faster (a 30 Hz display, a CPU-bound machine) is undone and stops further drops; a rung that
+// has to be dropped within 10 s of climbing to it becomes the ceiling. Off under automation (navigator.webdriver), so
+// test screenshots keep full quality; the test hook can switch it on.
+const PR_CAP = Math.min(window.devicePixelRatio || 1, 1.5);
+const QSTEPS = [];
+for (let s = 1024; s < SHADOW_MAP; s *= 2) QSTEPS.push({ pr: Math.min(0.75, PR_CAP), shadow: s });
+for (const pr of [0.75, 1, 1.25].filter(r => r < PR_CAP - 0.01).concat(PR_CAP)) QSTEPS.push({ pr, shadow: SHADOW_MAP });
+const quality = { auto: !navigator.webdriver, lvl: 0, floor: 0, ceil: QSTEPS.length - 1, ema: 1 / 60, slow: 0, fast: 0, since: 0, probe: 0, lastUp: false };
+function setQuality(i) {
+  const q = quality, s = QSTEPS[i];
+  q.lastUp = i > q.lvl; q.lvl = i; q.since = q.slow = q.fast = 0;
+  if (renderer.getPixelRatio() !== s.pr) renderer.setPixelRatio(s.pr);   // resizes the drawing buffer
+  if (s.shadow !== shadowSize) {
+    shadowSize = s.shadow;
+    sun.shadow.mapSize.set(shadowSize, shadowSize);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }   // three makes a new one at the next render
+    sun.shadow.camera.right = -1;   // placeSun recomputes the texel size and bias
+  }
+}
+{
+  let i = QSTEPS.length - 1;
+  if (isTouch) while (i > 0 && QSTEPS[i].pr > 1.25) i--;
+  setQuality(i);
+  quality.lastUp = false;
+}
+function adaptQuality(sec) {
+  const q = quality;
+  if (!q.auto || state !== 'play' || sec > 0.25) { q.slow = q.fast = 0; return; }   // menus and one-off hitches don't count
+  q.ema += (sec - q.ema) * Math.min(1, sec / 0.5);
+  q.since += sec;
+  if (q.probe && q.since > 2) {
+    if (q.ema > q.probe * 0.92) { setQuality(q.lvl + 1); q.floor = q.lvl; q.lastUp = false; }   // no faster: undo, stop dropping
+    q.probe = 0;
+  }
+  q.slow = q.ema > 0.024 ? q.slow + sec : 0;
+  q.fast = q.ema < 0.018 ? q.fast + sec : 0;
+  if (q.slow > 2 && q.lvl > q.floor) {
+    if (q.lastUp && q.since < 10) q.ceil = q.lvl - 1;
+    q.probe = q.ema;
+    setQuality(q.lvl - 1);
+  } else if (q.fast > 6 && q.lvl < q.ceil && q.since > 10) setQuality(q.lvl + 1);
+}
+
+// ---------------------------------------------------------------- textures
+const aniso = renderer.capabilities.getMaxAnisotropy();
+// Facade styles, each 8 x 8 bays of 4 m (one 32 m repeat): colour, the glow of lit windows, and roughness (G) /
+// metalness (B), so glass is glossy and mirrors the sky while walls stay matte. Lit windows are warm interiors, matte
+// enough that their glow isn't lost under reflections, and read against the shaded faces at dusk.
+const OFFICE = 0, GLASS = 1, BRICK = 2;
+function facadeTextures(style) {
+  const S = 512, cells = 8, cs = S / cells;
+  const canvas = () => { const c = document.createElement('canvas'); c.width = c.height = S; return c; };
+  const c = canvas(), e = canvas(), r = canvas();
+  const g = c.getContext('2d'), ge = e.getContext('2d'), gr = r.getContext('2d');
+  ge.fillStyle = '#000'; ge.fillRect(0, 0, S, S);
+  const rm = (rough, metal) => `rgb(0,${Math.round(rough * 255)},${Math.round(metal * 255)})`;
+  const warm = ['#ffc46e', '#ffb24f', '#ffd9a0', '#ffcf86', '#ffbe7a', '#bcd2ff'];
+  const pane = (x, y, w, h, top, mid, bot, rough, metal) => {
+    const lg = g.createLinearGradient(x, y, x + w * 0.35, y + h);
+    lg.addColorStop(0, top); lg.addColorStop(0.55, mid); lg.addColorStop(1, bot);
+    g.fillStyle = lg; g.fillRect(x, y, w, h);
+    gr.fillStyle = rm(rough, metal); gr.fillRect(x, y, w, h);
+  };
+  // a lit room behind the glass, with a darker band of furniture below the sill line, sometimes behind blinds
+  const lit = (x, y, w, h, chance) => {
+    if (Math.random() >= chance) return;
+    ge.fillStyle = warm[(Math.random() * warm.length) | 0]; ge.fillRect(x, y, w, h);
+    ge.fillStyle = 'rgba(0,0,0,0.45)'; ge.fillRect(x, y + h * 0.72, w, h * 0.28);
+    if (Math.random() < 0.3) { ge.fillStyle = 'rgba(0,0,0,0.3)'; for (let b = y + 2; b < y + h * 0.7; b += 4) ge.fillRect(x, b, w, 1.5); }
+    g.fillStyle = '#6e5c48'; g.fillRect(x, y, w, h);
+    gr.fillStyle = rm(0.45, 0); gr.fillRect(x, y, w, h);
+  };
+  if (style === GLASS) {
+    // curtain wall: floor-to-ceiling glass, slim mullions, a dark spandrel at each floor slab
+    g.fillStyle = '#3a414c'; g.fillRect(0, 0, S, S);
+    gr.fillStyle = rm(0.35, 0.8); gr.fillRect(0, 0, S, S);
+    for (let row = 0; row < cells; row++) for (let k = 0; k < cells; k++) {
+      const x = k * cs, y = row * cs, wy = y + 2, wh = cs - 13;
+      pane(x + 2, wy, cs - 4, wh, '#c8d5e2', '#8ea3b9', '#5f758e', 0.04, 0.9);
+      lit(x + 2, wy, cs - 4, wh, 0.12);
+      g.fillStyle = '#7c8794'; g.fillRect(x + cs / 2 - 1, wy, 2, wh);
+      g.fillStyle = '#59616c'; g.fillRect(x, y + cs - 11, cs, 2);
+    }
+  } else if (style === BRICK) {
+    // brick courses with a little shade variety per brick, punched windows with white frames, stone lintels and sills
+    g.fillStyle = '#8a7768'; g.fillRect(0, 0, S, S);
+    gr.fillStyle = rm(0.92, 0); gr.fillRect(0, 0, S, S);
+    for (let yy = 0; yy < S; yy += 4) for (let xx = (yy / 4) % 2 ? -4 : 0; xx < S; xx += 8) {
+      const v = 0.82 + Math.random() * 0.26;
+      g.fillStyle = `rgb(${(160 * v) | 0},${(88 * v) | 0},${(64 * v) | 0})`; g.fillRect(xx, yy, 7, 3);
+    }
+    for (let row = 0; row < cells; row++) for (let k = 0; k < cells; k++) {
+      const x = k * cs, y = row * cs, wx = x + 18, ww = cs - 36, wy = y + 15, wh = cs - 30;
+      g.fillStyle = '#cfc5b5'; g.fillRect(wx - 4, wy - 6, ww + 8, 4); g.fillRect(wx - 3, wy + wh + 2, ww + 6, 3);
+      g.fillStyle = '#ebe5da'; g.fillRect(wx - 2, wy - 2, ww + 4, wh + 4);
+      gr.fillStyle = rm(0.5, 0); gr.fillRect(wx - 2, wy - 2, ww + 4, wh + 4);
+      pane(wx, wy, ww, wh, '#7d8fa3', '#3f5064', '#212a36', 0.12, 0.5);
+      lit(wx, wy, ww, wh, 0.3);
+      g.fillStyle = '#ebe5da'; g.fillRect(wx, wy + wh * 0.42, ww, 2);
+    }
+  } else {
+    // stone office block: punched windows with a centre mullion and a band at each floor
+    g.fillStyle = '#ddd6ca'; g.fillRect(0, 0, S, S);
+    gr.fillStyle = rm(0.88, 0); gr.fillRect(0, 0, S, S);
+    for (let row = 0; row < cells; row++) for (let k = 0; k < cells; k++) {
+      const x = k * cs, y = row * cs, wx = x + 9, wy = y + 9, ww = cs - 18, wh = cs - 22;
+      g.fillStyle = '#c8c0b4'; g.fillRect(x, y + cs - 7, cs, 7);
+      pane(wx, wy, ww, wh, '#b4c4d4', '#6c8399', '#3c4e64', 0.06, 0.75);
+      lit(wx, wy, ww, wh, 0.22);
+      g.fillStyle = '#9a948b'; g.fillRect(wx + ww / 2 - 1, wy, 2, wh);
+      gr.fillStyle = rm(0.6, 0); gr.fillRect(wx + ww / 2 - 1, wy, 2, wh);
+    }
+  }
+  const make = (cv, srgb) => {
+    const t = new THREE.CanvasTexture(cv);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso;
+    if (srgb) t.encoding = THREE.sRGBEncoding;
+    return t;
+  };
+  return { map: make(c, true), emissive: make(e, true), rm: make(r, false) };
+}
+
+// gravel roof: speckled chippings, darker tar patches and the seams of the membrane (a 16 m tile)
+function roofTexture() {
+  const S = 256;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#b9b2a8'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 9; i++) {
+    g.fillStyle = `rgba(70,64,58,${0.03 + Math.random() * 0.05})`;
+    g.beginPath(); g.ellipse(Math.random() * S, Math.random() * S, 10 + Math.random() * 40, 6 + Math.random() * 24, Math.random() * 3, 0, Math.PI * 2); g.fill();
+  }
+  for (let i = 0; i < 5000; i++) {
+    const v = Math.random() < 0.5 ? 95 + Math.random() * 40 : 195 + Math.random() * 40;
+    g.fillStyle = `rgba(${v | 0},${(v * 0.97) | 0},${(v * 0.93) | 0},0.4)`; g.fillRect(Math.random() * S, Math.random() * S, 1.5, 1.5);
+  }
+  g.fillStyle = 'rgba(80,74,68,0.35)'; g.fillRect(0, 0, S, 2); g.fillRect(0, 0, 2, S); g.fillRect(S / 2, 0, 1, S);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(2, 2); t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+
+const P = 90, BLOCK_MIN = 10, BLOCK_MAX = 80, N = 12, HALF = N * P / 2;
+
+function groundTexture() {
+  const S = 1024, k = S / P;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#3a3a40'; g.fillRect(0, 0, S, S);                        // asphalt
+  g.fillStyle = '#9d968c'; g.fillRect(BLOCK_MIN * k, BLOCK_MIN * k, (BLOCK_MAX - BLOCK_MIN) * k, (BLOCK_MAX - BLOCK_MIN) * k); // sidewalk
+  g.fillStyle = '#b4ada2'; g.fillRect((BLOCK_MIN + 4) * k, (BLOCK_MIN + 4) * k, (BLOCK_MAX - BLOCK_MIN - 8) * k, (BLOCK_MAX - BLOCK_MIN - 8) * k);
+  g.fillStyle = '#e0b33c';                                                  // center lines on tile edges
+  g.fillRect(0, 0, 3, S); g.fillRect(S - 3, 0, 3, S); g.fillRect(0, 0, S, 3); g.fillRect(0, S - 3, S, 3);
+  g.fillStyle = 'rgba(240,240,235,0.75)';                                    // lane dashes, stopping short of the crosswalks
+  for (let t = (BLOCK_MIN + 5) * k; t < (BLOCK_MAX - 5) * k; t += 40) {
+    g.fillRect(5 * k - 2, t, 4, 22); g.fillRect(S - 5 * k - 2, t, 4, 22);
+    g.fillRect(t, 5 * k - 2, 22, 4); g.fillRect(t, S - 5 * k - 2, 22, 4);
+  }
+  // crosswalks: zebra bands just outside each intersection, one across each street; the bands never cross each other
+  g.fillStyle = 'rgba(240,240,235,0.8)';
+  for (let s = 6; s < BLOCK_MIN * k - 8; s += 18) for (const a of [s, S - s - 10]) {
+    g.fillRect(a, (BLOCK_MIN + 0.8) * k, 10, 3 * k); g.fillRect(a, (BLOCK_MAX - 3.8) * k, 10, 3 * k);
+    g.fillRect((BLOCK_MIN + 0.8) * k, a, 3 * k, 10); g.fillRect((BLOCK_MAX - 3.8) * k, a, 3 * k, 10);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(N, N); t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+
+// suit texture: one cell of web lines (a dark line along two edges), tiled by the suit's UVs; (0.5, 0.5) is blank
+function webTexture() {
+  const S = 64;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, S, S);
+  g.fillStyle = 'rgba(10,10,14,0.55)'; g.fillRect(0, 0, S, 2); g.fillRect(0, 0, 2, S);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+
+// ---------------------------------------------------------------- city generation
+let seed = 20231020;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const boxes = [];
+// facade geometry per style (bays: snap the texture to whole 4 m window bays on every face), and roofs with cornices
+const walls = [OFFICE, GLASS, BRICK].map(() => ({ pos: [], nor: [], uv: [], col: [], bays: true }));
+const roof = { pos: [], nor: [], uv: [], col: [] };
+const towers = [];
+const parks = [];
+const CELL_TEX = 32; // metres covered by one facade texture repeat
+
+function face(B, o, U, V, color, uo, vo) {
+  const n = new V3().crossVectors(U, V).normalize();
+  // a facade spans a whole number of bays (stretched by at most 2 m over its width), so corners never cut a window
+  const ul = (B.bays ? Math.max(1, Math.round(U.length() / (CELL_TEX / 8))) / 8 : U.length() / CELL_TEX), vl = V.length() / CELL_TEX;
+  const p = [o, o.clone().add(U), o.clone().add(U).add(V), o.clone().add(V)];
+  const t = [[uo, vo], [uo + ul, vo], [uo + ul, vo + vl], [uo, vo + vl]];
+  for (const i of [0, 1, 2, 0, 2, 3]) {
+    B.pos.push(p[i].x, p[i].y, p[i].z);
+    B.nor.push(n.x, n.y, n.z);
+    B.uv.push(t[i][0], t[i][1]);
+    B.col.push(color.r, color.g, color.b);
+  }
+}
+function boxFaces(B, x0, y0, z0, x1, y1, z1, color, uo, withRoof, roofColor) {
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0, vo = y0 / CELL_TEX;
+  face(B, new V3(x1, y0, z1), new V3(0, 0, -dz), new V3(0, dy, 0), color, uo, vo);
+  face(B, new V3(x0, y0, z0), new V3(0, 0, dz), new V3(0, dy, 0), color, uo + 0.25, vo);
+  face(B, new V3(x0, y0, z1), new V3(dx, 0, 0), new V3(0, dy, 0), color, uo + 0.5, vo);
+  face(B, new V3(x1, y0, z0), new V3(-dx, 0, 0), new V3(0, dy, 0), color, uo + 0.75, vo);
+  if (withRoof) face(roof, new V3(x0, y1, z1), new V3(dx, 0, 0), new V3(0, 0, -dz), roofColor, 0, 0);
+}
+
+const TINTS = ['#e3d6c3', '#c9c6c0', '#b98a74', '#a9bcd2', '#d8cbb5', '#8d9aa8', '#c49a7c', '#dcc9a6', '#9fb0a0'].map(c => new THREE.Color(c));
+const LEDGE = new THREE.Color('#8b857c'), PALE = new THREE.Color('#e6ebf0');
+// roof finishes: pale and dark gravel, tar, weathered green, warm membrane (multiplied with the gravel texture)
+const ROOFS = ['#d8d2c8', '#b9b5ae', '#8f8b86', '#a9b5aa', '#c9b7a6', '#9e9a96'].map(c => new THREE.Color(c));
+// deterministic 0..1 from a position, for looks only (the city's rnd() sequence must not change)
+const hash2 = (x, z) => { const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return s - Math.floor(s); };
+
+function addTier(x0, z0, x1, z1, y0, y1, tint, uo, style) {
+  boxes.push({ minX: x0, maxX: x1, minY: y0, maxY: y1, minZ: z0, maxZ: z1, q: 0 });
+  // brick and glass carry their own colour; the building's tint only nudges them
+  const col = style === OFFICE ? tint : tint.clone().lerp(PALE, 0.6);
+  boxFaces(walls[style], x0, y0, z0, x1, y1, z1, col, uo, false);
+  // cornice ledge in a darker shade of the building; its top is the visible roof and sits flush with the collision
+  // top so feet rest on it
+  const m = 0.6, trim = (style === BRICK ? LEDGE : tint).clone().multiplyScalar(0.78);
+  boxFaces(roof, x0 - m, y1 - 1.05, z0 - m, x1 + m, y1, z1 + m, trim, 0, true, ROOFS[(hash2(x0, z0) * ROOFS.length) | 0]);
+}
+
+function addBuilding(x0, z0, x1, z1, h) {
+  const tint = TINTS[(rnd() * TINTS.length) | 0];
+  const uo = Math.floor(rnd() * 8) / 8;
+  const w = x1 - x0, d = z1 - z0;
+  // downtown towers are mostly glass, low blocks mostly brick
+  const r = hash2(x1, z1), style = h > 110 ? (r < 0.7 ? GLASS : OFFICE) : h > 60 ? (r < 0.3 ? GLASS : r < 0.85 ? OFFICE : BRICK) : (r < 0.55 ? BRICK : OFFICE);
+  if (h > 55 && rnd() < 0.6) {
+    const h1 = h * (0.45 + rnd() * 0.2);
+    addTier(x0, z0, x1, z1, 0, h1, tint, uo, style);
+    const ix = w * (0.12 + rnd() * 0.12), iz = d * (0.12 + rnd() * 0.12);
+    if (h > 120 && rnd() < 0.6) {
+      const h2 = lerp(h1, h, 0.6);
+      addTier(x0 + ix, z0 + iz, x1 - ix, z1 - iz, h1, h2, tint, uo, style);
+      const jx = ix + (w - 2 * ix) * 0.15, jz = iz + (d - 2 * iz) * 0.15;
+      addTier(x0 + jx, z0 + jz, x1 - jx, z1 - jz, h2, h, tint, uo, style);
+    } else {
+      addTier(x0 + ix, z0 + iz, x1 - ix, z1 - iz, h1, h, tint, uo, style);
+    }
+  } else {
+    addTier(x0, z0, x1, z1, 0, h, tint, uo, style);
+    if (h < 60 && w > 16 && d > 16 && rnd() < 0.45) towers.push(new V3(lerp(x0 + 5, x1 - 5, rnd()), h, lerp(z0 + 5, z1 - 5, rnd())));
+  }
+}
+
+for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+  const bx = -HALF + i * P, bz = -HALF + j * P;
+  const X0 = bx + BLOCK_MIN, X1 = bx + BLOCK_MAX, Z0 = bz + BLOCK_MIN, Z1 = bz + BLOCK_MAX;
+  if (i === 5 && j === 5) {
+    // landmark tower
+    addTier(X0 + 5, Z0 + 5, X1 - 5, Z1 - 5, 0, 95, TINTS[0], 0, OFFICE);
+    addTier(X0 + 13, Z0 + 13, X1 - 13, Z1 - 13, 95, 210, TINTS[3], 0.25, GLASS);
+    addTier(X0 + 22, Z0 + 22, X1 - 22, Z1 - 22, 210, 290, TINTS[3], 0.5, GLASS);
+    addTier(X0 + 30, Z0 + 30, X1 - 30, Z1 - 30, 290, 312, TINTS[5], 0.5, OFFICE);
+    boxes.push({ minX: bx + 44, maxX: bx + 46, minY: 312, maxY: 360, minZ: bz + 44, maxZ: bz + 46, q: 0 });
+    boxFaces(roof, bx + 44, 312, bz + 44, bx + 46, 360, bz + 46, LEDGE, 0, true, LEDGE);
+    continue;
+  }
+  const cx = bx + P / 2, cz = bz + P / 2;
+  const dist = Math.hypot(cx, cz);
+  if (rnd() < 0.07 && dist > 150) { parks.push([X0, Z0, X1, Z1]); continue; }
+  const nx = rnd() < 0.5 ? 1 : 2, nz = rnd() < 0.5 ? 1 : 2, gap = 6;
+  const lw = (X1 - X0 - gap * (nx - 1)) / nx, ld = (Z1 - Z0 - gap * (nz - 1)) / nz;
+  for (let a = 0; a < nx; a++) for (let b = 0; b < nz; b++) {
+    const m = 0.5 + rnd() * 2;
+    const x0 = X0 + a * (lw + gap) + m, x1 = x0 + lw - 2 * m;
+    const z0 = Z0 + b * (ld + gap) + m, z1 = z0 + ld - 2 * m;
+    const downtown = 170 * Math.exp(-Math.pow(dist / 330, 2));
+    let h = 22 + rnd() * 38 + downtown * (0.35 + rnd() * 0.85);
+    if (rnd() < 0.05) h += 90;
+    addBuilding(x0, z0, x1, z1, h);
+  }
+}
+
+function mergedMesh(B, mat) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(B.pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(B.nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(B.uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(B.col, 3));
+  g.computeBoundingSphere();
+  const m = new THREE.Mesh(g, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+walls.forEach((B, style) => {
+  const t = facadeTextures(style);
+  scene.add(mergedMesh(B, new THREE.MeshStandardMaterial({
+    map: t.map, emissiveMap: t.emissive, emissive: new THREE.Color('#ffffff'), emissiveIntensity: 0.85,
+    roughnessMap: t.rm, metalnessMap: t.rm, roughness: 1, metalness: 1, vertexColors: true
+  })));
+});
+scene.add(mergedMesh(roof, new THREE.MeshStandardMaterial({ map: roofTexture(), vertexColors: true, roughness: 0.95 })));
+
+// water towers
+{
+  const tank = new THREE.InstancedMesh(new THREE.CylinderGeometry(2.4, 2.4, 5, 14), new THREE.MeshStandardMaterial({ color: '#7a5a44', roughness: 0.95 }), towers.length);
+  // a low conical lid: the collision box's flat top (see below) runs through it, so feet on it don't sink in
+  const cap = new THREE.InstancedMesh(new THREE.ConeGeometry(2.7, 0.8, 14), new THREE.MeshStandardMaterial({ color: '#5a4436', roughness: 0.95 }), towers.length);
+  const legs = new THREE.InstancedMesh(new THREE.CylinderGeometry(1.8, 2.2, 3, 6), new THREE.MeshStandardMaterial({ color: '#3b3632', roughness: 1 }), towers.length);
+  const m = new THREE.Matrix4();
+  towers.forEach((p, i) => {
+    m.makeTranslation(p.x, p.y + 1.5, p.z); legs.setMatrixAt(i, m);
+    m.makeTranslation(p.x, p.y + 5.5, p.z); tank.setMatrixAt(i, m);
+    m.makeTranslation(p.x, p.y + 8.4, p.z); cap.setMatrixAt(i, m);
+  });
+  [tank, cap, legs].forEach(o => { o.castShadow = true; o.receiveShadow = true; scene.add(o); });
+}
+
+// ground, parks, water
+{
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(N * P, N * P), new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 0.95 }));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), new THREE.MeshStandardMaterial({ color: '#3c5a73', roughness: 0.25, metalness: 0.4 }));
+  water.rotation.x = -Math.PI / 2; water.position.y = -0.6; scene.add(water);
+  const grass = new THREE.MeshStandardMaterial({ color: '#5f8a4a', roughness: 1 });
+  // trees: two instanced meshes for every park (crowns and trunks), so a wide shadow map stays cheap
+  const nTrees = parks.length * 14;
+  const crowns = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(3.2, 0), new THREE.MeshStandardMaterial({ color: '#4c7a3a', roughness: 1, flatShading: true }), nTrees);
+  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.45, 4, 6), new THREE.MeshStandardMaterial({ color: '#5a4030', roughness: 1 }), nTrees);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), at = new V3(), sc = new V3();
+  let n = 0;
+  for (const [x0, z0, x1, z1] of parks) {
+    const g = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.3, z1 - z0), grass);
+    g.position.set((x0 + x1) / 2, 0.15, (z0 + z1) / 2); g.receiveShadow = true; scene.add(g);
+    for (let t = 0; t < 14; t++, n++) {
+      const x = lerp(x0 + 4, x1 - 4, rnd()), z = lerp(z0 + 4, z1 - 4, rnd()), s = 0.8 + rnd() * 0.6;
+      crowns.setMatrixAt(n, m.compose(at.set(x, 6 * s, z), q, sc.set(s, s, s)));
+      trunks.setMatrixAt(n, m.compose(at.set(x, 2 * s, z), q, sc.set(1, s, 1)));
+      boxes.push({ minX: x - 0.45, maxX: x + 0.45, minY: 0, maxY: 4 * s, minZ: z - 0.45, maxZ: z + 0.45, q: 0, prop: true, tree: true });
+    }
+  }
+  [crowns, trunks].forEach(o => { o.castShadow = true; o.receiveShadow = true; scene.add(o); });
+}
+
+// water towers collide too (4.8 m wide, so the roof filters for tokens and spawn skip them)
+for (const t of towers) boxes.push({ minX: t.x - 2.4, maxX: t.x + 2.4, minY: t.y, maxY: t.y + 8.5, minZ: t.z - 2.4, maxZ: t.z + 2.4, q: 0, prop: true });
+
+// spatial grid for collision and anchor queries
+const GRID = 40, grid = new Map();
+const gkey = (i, j) => i * 4096 + j;
+boxes.forEach((b, idx) => {
+  for (let i = Math.floor(b.minX / GRID); i <= Math.floor(b.maxX / GRID); i++)
+    for (let j = Math.floor(b.minZ / GRID); j <= Math.floor(b.maxZ / GRID); j++) {
+      const k = gkey(i, j);
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(idx);
+    }
+});
+let qid = 0;
+const near = [];
+// boxes whose grid cells overlap the square x±radius, z±radius. Returns a shared array: copy it before querying again.
+function query(x, z, radius) {
+  qid++; near.length = 0;
+  const i1 = Math.floor((x + radius) / GRID), j0 = Math.floor((z - radius) / GRID), j1 = Math.floor((z + radius) / GRID);
+  for (let i = Math.floor((x - radius) / GRID); i <= i1; i++) for (let j = j0; j <= j1; j++) {
+    const list = grid.get(gkey(i, j));
+    if (!list) continue;
+    for (const idx of list) { const b = boxes[idx]; if (b.q !== qid) { b.q = qid; near.push(b); } }
+  }
+  return near;
+}
+function insideAny(pt) {
+  for (const b of query(pt.x, pt.z, 0)) {
+    if (pt.x > b.minX && pt.x < b.maxX && pt.z > b.minZ && pt.z < b.maxZ && pt.y < b.maxY && pt.y > b.minY) return true;
+  }
+  return false;
+}
+function sphereHits(pt, r) {
+  for (const b of query(pt.x, pt.z, r)) {
+    const dx = pt.x - clamp(pt.x, b.minX, b.maxX), dy = pt.y - clamp(pt.y, b.minY, b.maxY), dz = pt.z - clamp(pt.z, b.minZ, b.maxZ);
+    if (dx * dx + dy * dy + dz * dz < r * r) return true;
+  }
+  return false;
+}
+// first box hit by the ray o + d*t (d normalized), t < maxT. Walks the grid cells along the ray and allocates nothing:
+// the result object is shared, so copy what you keep. Boxes containing the origin are ignored. The +maxT, the finite
+// 1e30 for 'never' (not Infinity) and the indexed loop keep V8 from boxing doubles on the heap in the walk.
+const rayHit = { t: 0, box: null, n: new V3(), p: new V3() };
+function raycast(o, d, maxT) {
+  qid++;
+  let best = +maxT, hitBox = null, nAxis = -1, nSign = 0;
+  let ci = Math.floor(o.x / GRID), cj = Math.floor(o.z / GRID);
+  const si = d.x > 0 ? 1 : -1, sj = d.z > 0 ? 1 : -1;
+  const ax = Math.abs(d.x), az = Math.abs(d.z);
+  const stepX = ax > 1e-9 ? GRID / ax : 1e30, stepZ = az > 1e-9 ? GRID / az : 1e30;
+  let tx = ax > 1e-9 ? (d.x > 0 ? (ci + 1) * GRID - o.x : o.x - ci * GRID) / ax : 1e30;
+  let tz = az > 1e-9 ? (d.z > 0 ? (cj + 1) * GRID - o.z : o.z - cj * GRID) / az : 1e30;
+  for (let guard = 0; guard < 64; guard++) {
+    const list = grid.get(gkey(ci, cj));
+    if (list) for (let k = 0; k < list.length; k++) {
+      const b = boxes[list[k]];
+      if (b.q === qid) continue;
+      b.q = qid;
+      let tmin = 0, tmax = best, axis = -1, sign = 0, ok = true;
+      for (let a = 0; a < 3 && ok; a++) {
+        const oa = a === 0 ? o.x : a === 1 ? o.y : o.z, da = a === 0 ? d.x : a === 1 ? d.y : d.z;
+        const mn = a === 0 ? b.minX : a === 1 ? b.minY : b.minZ, mx = a === 0 ? b.maxX : a === 1 ? b.maxY : b.maxZ;
+        if (Math.abs(da) < 1e-9) { if (oa < mn || oa > mx) ok = false; continue; }
+        let t1 = (mn - oa) / da, t2 = (mx - oa) / da, s = -1;
+        if (t1 > t2) { const tt = t1; t1 = t2; t2 = tt; s = 1; }
+        if (t1 > tmin) { tmin = t1; axis = a; sign = s; }
+        if (t2 < tmax) tmax = t2;
+        if (tmin > tmax) ok = false;
+      }
+      if (ok && axis >= 0 && tmin < best) { best = tmin; hitBox = b; nAxis = axis; nSign = sign; }
+    }
+    const tNext = Math.min(tx, tz);
+    if (tNext > best || tNext > maxT) break;
+    if (tx < tz) { ci += si; tx += stepX; } else { cj += sj; tz += stepZ; }
+  }
+  if (!hitBox) return null;
+  rayHit.t = best; rayHit.box = hitBox;
+  rayHit.n.set(nAxis === 0 ? nSign : 0, nAxis === 1 ? nSign : 0, nAxis === 2 ? nSign : 0);
+  rayHit.p.copy(o).addScaledVector(d, best);
+  return rayHit;
+}
+const segDir = new V3();
+// true when the straight segment a -> b (minus `trim` metres at the b end) passes through a box
+function segmentBlocked(a, b, trim) {
+  segDir.subVectors(b, a);
+  const L = segDir.length();
+  if (L <= trim + 0.01) return false;
+  segDir.multiplyScalar(1 / L);
+  return raycast(a, segDir, L - trim) !== null;
+}
+
+// ---------------------------------------------------------------- tokens
+const tokenMat = new THREE.MeshStandardMaterial({ color: '#ffc35a', emissive: '#ff9a1f', emissiveIntensity: 0.9, metalness: 0.6, roughness: 0.3 });
+const tokenGeo = new THREE.OctahedronGeometry(1.3, 0);
+const tokens = [];
+{
+  // only roofs with open sky above them; the centre of a lower tier is covered by the tier on top
+  const roofTops = boxes.filter(b => b.maxX - b.minX > 8 && b.maxY < 300 && !b.prop && !insideAny(new V3((b.minX + b.maxX) / 2, b.maxY + 2.5, (b.minZ + b.maxZ) / 2)));
+  const spots = [];
+  while (spots.length < 24) {
+    const b = roofTops[(rnd() * roofTops.length) | 0];
+    const s = new V3((b.minX + b.maxX) / 2, b.maxY + 2.5, (b.minZ + b.maxZ) / 2);
+    if (sphereHits(s, 1.3) || spots.some(o => o.distanceTo(s) < 6)) continue; // a water tower stands there, or a repeat
+    spots.push(s);
+  }
+  // 13 over intersections; the last 3 of the 40 lead away from the spawn (see addRouteTokens)
+  for (let i = 0; i < 13; i++) {
+    const gi = 1 + ((rnd() * (N - 1)) | 0), gj = 1 + ((rnd() * (N - 1)) | 0);
+    spots.push(new V3(-HALF + gi * P, 20 + rnd() * 60, -HALF + gj * P));
+  }
+  spots.forEach(addToken);
+}
+function addToken(pos) {
+  const m = new THREE.Mesh(tokenGeo, tokenMat);
+  m.position.copy(pos); m.userData.phase = tokens.length;
+  scene.add(m);
+  tokens.push({ pos, mesh: m, taken: false, i: tokens.length });
+}
+
+// ---------------------------------------------------------------- hero model
+// Rigid segments with rounded ends, so bent elbows and knees close up instead of cracking open. Each segment is one
+// merged, vertex-coloured mesh sharing the suit material. Web lines radiate from the face and from the chest and back
+// emblems (spheres with their poles there) and run as a grid along the limbs; white and black parts use a blank texel.
+const hero = new THREE.Group();   // at the collision sphere's centre, soles at -R; faces +z, and +x is the hero's left
+const joints = {};
+const SHOULDER_X = 0.265, SHOULDER_Y = 0.455;
+{
+  const lin = c => new THREE.Color(c).convertSRGBToLinear();
+  const RED = lin('#d0121e'), BLUE = lin('#2445b8'), WHITE = lin('#f4f4f4'), BLACK = lin('#0c0c10');
+  const suit = new THREE.MeshStandardMaterial({ vertexColors: true, map: webTexture(), roughness: 0.5, metalness: 0.05 });
+  const lens = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#e4ecff', emissiveIntensity: 0.6, roughness: 0.2 });
+  const solid = g => (g.index ? g.toNonIndexed() : g);
+  // solid of revolution from y = 0 down to y = -len: radius r1 at the top, r2 at the bottom, hemispherical ends.
+  // Rings every 4 cm along the shaft keep colour edges (glove, boot) sharp instead of smeared down the whole limb.
+  function capsule(len, r1, r2) {
+    const pts = [], rings = Math.max(1, Math.round(len / 0.04));
+    for (let i = 0; i <= 4; i++) { const a = -Math.PI / 2 + i * Math.PI / 8; pts.push(new THREE.Vector2(Math.cos(a) * r2, -len + Math.sin(a) * r2)); }
+    for (let i = 1; i < rings; i++) pts.push(new THREE.Vector2(lerp(r2, r1, i / rings), -len + len * i / rings));
+    for (let i = 0; i <= 4; i++) { const a = i * Math.PI / 8; pts.push(new THREE.Vector2(Math.cos(a) * r1, Math.sin(a) * r1)); }
+    return solid(new THREE.LatheGeometry(pts, 14));
+  }
+  // ellipsoid with radii (a, b, c), its poles facing +-z; `taper` widens x toward the top (and narrows it below the middle)
+  function blob(x, y, z, a, b, c, taper = 0, rz = 0, ry = 0) {
+    const g = new THREE.SphereGeometry(1, 20, 14).rotateX(Math.PI / 2);
+    g.scale(a, b, c);
+    if (taper) {
+      const ps = g.attributes.position;
+      for (let i = 0; i < ps.count; i++) { const k = 1 + taper * ps.getY(i) / b; ps.setX(i, ps.getX(i) * k); ps.setZ(i, ps.getZ(i) * (1 + 0.3 * (k - 1))); }
+      g.computeVertexNormals();
+    }
+    return solid(g.rotateZ(rz).rotateY(ry).translate(x, y, z));
+  }
+  // thin bar from a to b (spider emblem legs)
+  function bar(a, b, w) {
+    const d = new V3().subVectors(b, a), g = new THREE.BoxGeometry(w, d.length(), w * 0.7);
+    g.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), d.normalize())));
+    return solid(g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2));
+  }
+  const red = () => RED, blue = () => BLUE, white = () => WHITE, black = () => BLACK;
+  const uvOut = { u: 0.5, v: 0.5 };
+  const sphereUV = (cu, cv) => (pt, u, v) => { uvOut.u = u * cu; uvOut.v = v * cv; };   // lines radiate from the poles
+  const limbUV = (pt, u) => { uvOut.u = u * 7; uvOut.v = -pt.y / 0.065; };                // a grid along the limb
+  const P = new V3(), Nm = new V3();
+  // one mesh from parts [geometry, paint(position, normal) -> colour, uv(position, u, v) or none for a blank texel]
+  function segment(parent, parts, mat = suit) {
+    let n = 0;
+    for (const [g] of parts) n += g.attributes.position.count;
+    const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2), col = new Float32Array(n * 3);
+    let o = 0;
+    for (const [g, paint, uvf] of parts) {
+      const gp = g.attributes.position, gn = g.attributes.normal, gu = g.attributes.uv;
+      for (let i = 0; i < gp.count; i++, o++) {
+        P.fromBufferAttribute(gp, i); Nm.fromBufferAttribute(gn, i);
+        uvOut.u = uvOut.v = 0.5;
+        if (uvf) uvf(P, gu.getX(i), gu.getY(i));
+        P.toArray(pos, o * 3); Nm.toArray(nor, o * 3); paint(P, Nm).toArray(col, o * 3);
+        uv[o * 2] = uvOut.u; uv[o * 2 + 1] = uvOut.v;
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.computeBoundingSphere();
+    const m = new THREE.Mesh(geo, mat);
+    m.castShadow = m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  }
+  // torso: one tapered ellipsoid, wide at the shoulders; blue down the sides below the armpits
+  const TY = 0.22, TA = 0.2, TB = 0.3, TC = 0.125, TT = 0.34;
+  const torsoZ = (x, y) => {   // depth of the torso's front surface at (x, y)
+    const k = 1 + TT * (y - TY) / TB, a = TA * k, c = TC * (1 + 0.3 * (k - 1));
+    return c * Math.sqrt(Math.max(0, 1 - (x / a) ** 2 - ((y - TY) / TB) ** 2));
+  };
+  // spider emblem on the chest (s = 1) or the back (s = -1), drawn on the torso's surface
+  function emblem(s, y0, k) {
+    const at = (x, y) => new V3(x * k, y0 + y * k, s * (torsoZ(x * k, y0 + y * k) + 0.004));
+    const parts = [[blob(0, y0 - 0.005 * k, s * (torsoZ(0, y0) + 0.004), 0.017 * k, 0.034 * k, 0.008), white],
+      [blob(0, y0 + 0.042 * k, s * (torsoZ(0, y0 + 0.042 * k) + 0.004), 0.012 * k, 0.014 * k, 0.007), white]];
+    const legs = [[[0.012, 0.02], [0.05, 0.062], [0.058, 0.118]], [[0.014, 0.008], [0.068, 0.03], [0.098, 0.068]],
+      [[0.014, -0.006], [0.068, -0.028], [0.098, -0.075]], [[0.012, -0.02], [0.048, -0.066], [0.054, -0.128]]];
+    for (const m of [1, -1]) for (const [a, b, c] of legs) {
+      parts.push([bar(at(m * a[0], a[1]), at(m * b[0], b[1]), 0.007 * k), white]);
+      parts.push([bar(at(m * b[0], b[1]), at(m * c[0], c[1]), 0.006 * k), white]);
+    }
+    return parts;
+  }
+  const spine = new THREE.Group(); hero.add(spine);            // bends and twists the upper body about the waist
+  const head = new THREE.Group(); head.position.y = 0.64; spine.add(head);
+  segment(spine, [
+    [blob(0, TY, 0, TA, TB, TC, TT), (pt, n) => (Math.abs(n.x) > 0.62 && pt.y < 0.42 ? BLUE : RED), sphereUV(20, 12)],
+    [capsule(0.13, 0.058, 0.066).translate(0, 0.66, 0.005), red, limbUV],
+    [blob(SHOULDER_X - 0.02, SHOULDER_Y, 0, 0.095, 0.092, 0.092), red, sphereUV(10, 6)],
+    [blob(-SHOULDER_X + 0.02, SHOULDER_Y, 0, 0.095, 0.092, 0.092), red, sphereUV(10, 6)],
+    ...emblem(1, 0.33, 1), ...emblem(-1, 0.31, 1.35)
+  ]);
+  segment(hero, [[blob(0, -0.1, 0, 0.172, 0.125, 0.115), blue, sphereUV(14, 8)]]);
+  // head: red mask with web lines radiating from the face; big white lenses in black rims
+  segment(head, [
+    [blob(0, 0.15, 0.012, 0.113, 0.143, 0.127, 0.12), red, sphereUV(18, 11)],
+    [blob(0.05, 0.168, 0.118, 0.05, 0.068, 0.026, 0, -0.5, 0.38), black],
+    [blob(-0.05, 0.168, 0.118, 0.05, 0.068, 0.026, 0, 0.5, -0.38), black]
+  ]);
+  segment(head, [
+    [blob(0.05, 0.168, 0.125, 0.041, 0.057, 0.022, 0, -0.5, 0.38), white],
+    [blob(-0.05, 0.168, 0.125, 0.041, 0.057, 0.022, 0, 0.5, -0.38), white]
+  ], lens);
+  const limb = (parent, x, y, l1, upper, l2, lower, endY, endZ) => {
+    const j1 = new THREE.Group(); j1.position.set(x, y, 0); parent.add(j1);
+    segment(j1, upper);
+    const j2 = new THREE.Group(); j2.position.y = -l1; j1.add(j2);
+    segment(j2, lower);
+    const end = new THREE.Object3D(); end.position.set(0, endY, endZ); j2.add(end);
+    return { j1, j2, end };
+  };
+  // arms: red on the front, blue behind, red gloves; the elbow is the forearm's rounded top
+  const arm = s => limb(spine, s * SHOULDER_X, SHOULDER_Y, 0.29,
+    [[capsule(0.29, 0.075, 0.062), (pt, n) => (n.z > 0.1 || pt.y > -0.07 ? RED : BLUE), limbUV]],
+    0.26, [[capsule(0.26, 0.062, 0.05), (pt, n) => (n.z > 0.1 || pt.y < -0.13 ? RED : BLUE), limbUV],
+      [blob(0, -0.3, 0.005, 0.054, 0.066, 0.058), red, sphereUV(8, 5)]], -0.31, 0.01);
+  joints.armL = arm(1); joints.armR = arm(-1);
+  // legs: blue, red boots from below the knee; the sole sits at -R with the leg straight
+  const leg = s => limb(hero, s * 0.105, -0.15, 0.42,
+    [[capsule(0.42, 0.1, 0.072), blue, limbUV]],
+    0.365, [[capsule(0.365, 0.072, 0.05), pt => (pt.y > -0.15 ? BLUE : RED), limbUV],
+      [capsule(0.22, 0.052, 0.046).rotateX(-Math.PI / 2).scale(1, 0.75, 1).translate(0, -0.396, -0.06), red, limbUV]], -0.435, 0.05);
+  joints.legL = leg(1); joints.legR = leg(-1);
+  joints.spine = spine; joints.head = head;
+}
+scene.add(hero);
+
+// webs: unit-radius cylinders stretched between two points. The shader widens the strand with distance so it never
+// gets thinner than about 2.6 px on screen (3.5 cm thick close up); unlit and untoned, so it stays bright white.
+const webGeo = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
+webGeo.translate(0, 0.5, 0);
+const webMat = new THREE.ShaderMaterial({
+  uniforms: { r0: { value: 0.035 }, px: { value: 0.002 } },
+  vertexShader: `uniform float r0, px; varying float vLit;
+    void main() {
+      vec4 axis = modelViewMatrix * vec4(0.0, position.y, 0.0, 1.0);
+      float r = max(r0, -axis.z * px);
+      vLit = abs(normalize(normalMatrix * normal).z);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position.x * r, position.y, position.z * r, 1.0);
+    }`,
+  fragmentShader: 'varying float vLit; void main() { gl_FragColor = vec4(vec3(1.0, 0.98, 0.95) * (0.8 + 0.2 * vLit), 1.0); }'
+});
+const webs = [new THREE.Mesh(webGeo, webMat), new THREE.Mesh(webGeo, webMat)];
+webs.forEach(w => { w.visible = false; w.frustumCulled = false; scene.add(w); });
+const webRadius = depth => Math.max(webMat.uniforms.r0.value, depth * webMat.uniforms.px.value);
+const UP = new V3(0, 1, 0), webDir = new V3();
+function placeWeb(w, a, b) {
+  const len = webDir.subVectors(b, a).length();
+  if (len < 0.01) { w.visible = false; return; }
+  w.visible = true;
+  w.position.copy(a);
+  w.quaternion.setFromUnitVectors(UP, webDir.multiplyScalar(1 / len));
+  w.scale.set(1, len, 1);
+}
+// zip marker: a ring on a ledge a zip would launch from. Depth-tested, so the hero and buildings in front hide it.
+const zipMarker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 32), new THREE.MeshBasicMaterial({ color: '#ffc35a', transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, fog: false }));
+zipMarker.renderOrder = 10; zipMarker.visible = false; scene.add(zipMarker);
+
+// token beacons: a soft column of gold light rising 90 m from every token, so tokens read from across the city.
+// Additive and unfogged, kept at least about 6 px wide at any distance (like the webs), faded out up close; one
+// instanced draw (made in addBeacons once every token is placed).
+const beaconMat = new THREE.ShaderMaterial({
+  uniforms: { px: webMat.uniforms.px },
+  vertexShader: `uniform float px; varying float vH; varying float vEdge;
+    void main() {
+      mat4 mv = modelViewMatrix * instanceMatrix;
+      float depth = -(mv * vec4(0.0, position.y, 0.0, 1.0)).z;
+      float r = max(0.9, depth * px * 2.4);
+      vH = position.y;
+      vEdge = abs(normalize(mat3(mv) * normal).z) * smoothstep(10.0, 40.0, depth);
+      gl_Position = projectionMatrix * mv * vec4(position.x * r, position.y, position.z * r, 1.0);
+    }`,
+  fragmentShader: `varying float vH; varying float vEdge;
+    void main() { gl_FragColor = vec4(vec3(1.0, 0.55, 0.12) * (vEdge * vEdge * (1.0 - vH) * 0.7), 1.0); }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+});
+let beacons = null;
+const beaconM = new THREE.Matrix4();
+function addBeacons() {
+  beacons = new THREE.InstancedMesh(webGeo, beaconMat, tokens.length);
+  for (const t of tokens) beacons.setMatrixAt(t.i, beaconM.makeScale(1, 90, 1).setPosition(t.pos.x, t.pos.y + 1.6, t.pos.z));
+  scene.add(beacons);
+}
+function beaconOff(t) {
+  beacons.setMatrixAt(t.i, beaconM.makeScale(0, 0, 0));
+  beacons.instanceMatrix.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- player state
+const R = 1.0, G = 34, MAX_SPEED = 80;
+// physics runs at a fixed rate, decoupled from rendering; a frame catches up at most 0.1 s (slower than 10 fps runs slow)
+const PHYS_HZ = 120, STEP = 1 / PHYS_HZ, MAX_STEPS = 12;
+const JUMP_BUFFER = 0.15;   // a jump pressed this early still counts when it becomes possible (landing, web)
+const WEB_GRACE = 0.25;     // a jump this soon after a web lets go is still a swing jump
+const ROPE_MIN = 7, STREET_CLEAR = R + 1.5, ROPE_PULL = 600;   // ROPE_PULL: most a rope can turn your velocity, m/s per second
+const REEL_FRAC = 0.9, REEL_RATE = 12;  // a new web reels in to 90% of its length at 12 m/s: a tug instead of a snap
+const LAT_KEEP = 0.35;      // share of the anchor's sideways offset the swing plane keeps (the rest would pull you into the facade)
+const ASSIST = 2.5;         // steering assist: rate at which sideways drift off the travel line is redirected forward
+const CRUISE = 40;          // the downswing pushes toward this speed
+const PIVOT_OPEN = 22;      // how far a fulcrum sits out from a facade with nothing across from it (further, the drawn web and the rope part ways)
+const p = {
+  pos: new V3(), vel: new V3(), prev: new V3(), heading: new V3(0, 0, 1),
+  travel: new V3(0, 0, 1),  // intended direction while swinging: steers anchors and the assist
+  onGround: false, wallN: null, wallHit: 0, wallBox: null, wallRun: null, wallCool: 0, jumpN: new V3(),
+  web: null, zip: null, reattach: 0, runPhase: 0, runTime: 0, leaps: 0,   // leaps: swing leaps off the ground since the last web
+  airZips: 2, zipFx: 0, zipFxPoint: new V3(), releaseAt: -9, releaseTheta: 0, perchAt: -9, perchSpeed: 0,
+  webAt: -9,                // simTime of the last web attach, for camera and sound effects
+  trickAt: -9, trickPerfect: false   // simTime of the last swing jump or point launch, for the hero's flips
+};
+const drawPos = new V3();   // p.pos interpolated between physics steps, for rendering
+let simTime = 0, simAcc = 0, jumpBuf = 0, jumpAt = -9, zipBuf = 0, swingTap = false, swingWas = false;
+// chase camera state. target: the point the camera frames (the hero's chest plus the speed lag); curD: camera distance
+// after collision; snap: skip smoothing on the next frame (after a teleport or the title screen)
+const cam = { yaw: 0, pitch: 0.1, dist: 7, fov: 66, target: new V3(), curD: 7, free: 7, snap: true };
+function teleport(pos, vel, yaw, pitch = 0.12) {
+  p.pos.copy(pos); p.prev.copy(pos); drawPos.copy(pos); p.vel.copy(vel);
+  p.web = p.zip = p.wallRun = p.wallN = p.wallBox = null;
+  p.onGround = false; p.reattach = p.wallCool = p.zipFx = p.runTime = p.leaps = 0; p.airZips = 2;
+  p.releaseAt = p.perchAt = p.webAt = -9;
+  jumpBuf = zipBuf = simAcc = 0; swingTap = false;
+  p.travel.set(Math.sin(yaw), 0, Math.cos(yaw)); p.heading.copy(p.travel);
+  cam.yaw = yaw; cam.pitch = pitch; cam.snap = true; camTurn = 1;
+  cam.target.copy(pos); cam.target.y += 0.2;
+}
+// Start on a mid-height roof (open sky above it) near (200, 200), at its corner nearest the landmark, looking down the
+// street beside that edge: holding swing from there leaps into a swing chain toward downtown.
+function spawn() {
+  const tower = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45);
+  const covered = b => boxes.some(o => o !== b && !o.prop && o.minY >= b.maxY - 0.01 && o.minX < b.maxX && o.maxX > b.minX && o.minZ < b.maxZ && o.maxZ > b.minZ);
+  const score = b => Math.hypot((b.minX + b.maxX) / 2 - 200, (b.minZ + b.maxZ) / 2 - 200);
+  const b = boxes.filter(o => !o.prop && o.maxY > 30 && o.maxY < 60 && o.maxX - o.minX > 12 && o.maxZ - o.minZ > 12 && !covered(o))
+    .sort((a, c) => score(a) - score(c))[0];
+  const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2, sx = Math.sign(tower.x - cx), sz = Math.sign(tower.z - cz);
+  const at = new V3(sx > 0 ? b.maxX - 1.5 : b.minX + 1.5, b.maxY + R + 0.02, sz > 0 ? b.maxZ - 1.5 : b.minZ + 1.5);
+  if (sphereHits(at, R)) at.set(cx, b.maxY + R + 0.02, cz);   // a water tower stands there
+  // look along x toward the landmark, turned a little toward the street on the landmark's side
+  teleport(at, new V3(), Math.atan2(sx, 0.35 * sz), 0.05);
+}
+// The last three tokens hang over the street the spawn looks down, 70, 140 and 210 m out at swing height, each 4 m
+// higher than the last as a first chain climbs: a target in view from the first second, and a trail that leads that
+// chain toward downtown.
+function addRouteTokens() {
+  const fx = Math.sin(cam.yaw), fz = Math.cos(cam.yaw), alongX = Math.abs(fx) > Math.abs(fz);
+  const lat = alongX ? fz : fx, from = alongX ? p.pos.z : p.pos.x;   // the street on the side the view leans toward
+  const k = (from + HALF) / P, street = -HALF + (lat > 0 ? Math.ceil(k) : Math.floor(k)) * P;
+  for (let i = 1; i <= 3; i++) {
+    const a = clamp((alongX ? p.pos.x : p.pos.z) + Math.sign(alongX ? fx : fz) * 70 * i, -HALF + 20, HALF - 20);
+    const y = p.pos.y - 6 + 4 * i;
+    const pt = alongX ? new V3(a, y, street) : new V3(street, y, a);
+    while (sphereHits(pt, 3) || tokens.some(t => t.pos.distanceTo(pt) < 10)) pt.y += 6;
+    addToken(pt);
+  }
+}
+
+// ---------------------------------------------------------------- input
+const keys = new Set();
+const input = { swing: false, dive: false, jumpPress: false, zipPress: false, lookX: 0, lookY: 0 };
+let mouseSwing = false, touchSwing = false, touchDive = false, padSwing = false, padDive = false;
+let lastLook = -10, clock = 0;
+if (isTouch) document.body.classList.add('touch');
+
+addEventListener('keydown', e => {
+  // browser shortcuts are never game keys (Ctrl+W closes the tab), so nothing is bound to Ctrl or Cmd
+  if (e.ctrlKey || e.metaKey) return;
+  if (state === 'title') { if (e.key === 'Enter') { e.preventDefault(); start(); } return; }
+  if (state === 'paused') {
+    if (e.repeat) return;
+    if (e.code === 'KeyP' || e.key === 'Enter') { e.preventDefault(); resume(); }
+    if (e.code === 'KeyM') toggleMute();
+    return;
+  }
+  if (state !== 'play') return;
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  if (e.repeat) return;
+  keys.add(e.code);
+  if (e.code === 'Space') input.jumpPress = true;
+  if (e.code === 'KeyE' || e.code === 'KeyF') input.zipPress = true;
+  // Esc only gets here while the mouse isn't captured; with it captured, Esc releases it and that pauses
+  if (e.code === 'KeyP' || e.code === 'Escape') pause();
+  if (e.code === 'KeyM') toggleMute();
+});
+addEventListener('keyup', e => {
+  keys.delete(e.code);
+  if (e.key === 'Meta') keys.clear();   // macOS drops the keyup of keys let go while Cmd was down
+});
+addEventListener('blur', () => {
+  keys.clear(); mouseSwing = false;
+  cancelResume();   // a 'Resuming…' wait doesn't carry on into the background either
+  if (state === 'play' && !isTouch) pause();   // the keyboard went elsewhere (another window, a browser dialog)
+});
+
+const view = renderer.domElement;
+// Pointer lock. The click or key that starts or resumes play asks for it. Chrome refuses a new lock for about 1.25 s
+// after the player pressed Esc to leave one, so Resume waits that out (lock.lostAt). If a request is refused, play
+// goes on with the free cursor, which still looks around, and the next click on the game asks again without firing a
+// web. A sandbox that blocks the lock, or three refusals in a row, give up on it (lock.unavailable): clicks swing as
+// usual and resting the free cursor at a screen edge keeps turning the view.
+let cursorX = -1;   // the cursor's x while it's over the game (-1: outside), for turning at the screen edge without the lock
+// fresh: the lock was just asked for or changed and no mouse move has come since (see the mousemove handler)
+const lock = { pending: false, reqAt: 0, unavailable: isTouch || !view.requestPointerLock, fails: 0, lostAt: -1e9, changedAt: -1e9, fresh: false, pageExit: false, noteT: 0 };
+function lockPointer() {
+  if (lock.unavailable || document.pointerLockElement) return;
+  if (lock.pending) {
+    if (performance.now() - lock.reqAt < 1500) return;
+    lockFailed(null);   // never answered: count it and ask again
+    if (lock.unavailable) return;
+  }
+  lock.pending = lock.fresh = true; lock.reqAt = performance.now();
+  try {
+    const r = view.requestPointerLock();
+    if (r && r.catch) r.catch(lockFailed);
+  } catch (err) { lockFailed(err); }
+}
+function lockFailed(err) {
+  if (err && /sandbox/i.test(err.message || '')) lock.unavailable = true;
+  if (!lock.pending) return;   // the promise and the pointerlockerror event report the same refusal
+  lock.pending = false;
+  if (++lock.fails >= 3) lock.unavailable = true;
+}
+document.addEventListener('pointerlockchange', () => {
+  lock.pending = false; lock.fresh = true; lock.changedAt = performance.now();
+  cursorX = -1;   // unknown until the free cursor moves again
+  if (document.pointerLockElement) {
+    lock.fails = 0;
+    // a request still pending when the game paused (P, Start, a blur) was granted afterwards: give the menu its cursor
+    if (state !== 'play') { lock.pageExit = true; document.exitPointerLock(); }
+    return;
+  }
+  if (lock.pageExit) { lock.pageExit = false; return; }   // pause() let it go: already paused (or quickly resumed)
+  lock.lostAt = performance.now();   // the player pressed Esc (or the browser took it back)
+  if (state === 'play') pause();
+});
+document.addEventListener('pointerlockerror', () => lockFailed(null));
+document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelResume(); if (state === 'play') pause(); } });
+
+view.addEventListener('contextmenu', e => e.preventDefault());
+view.addEventListener('mousedown', e => {
+  if (state !== 'play' || isTouch) return;
+  // a click that captures the mouse does only that, so taking the mouse back never fires a stray web
+  if (!document.pointerLockElement && !lock.unavailable) { lockPointer(); return; }
+  if (e.button === 0) mouseSwing = true;
+  if (e.button === 2) input.zipPress = true;
+});
+addEventListener('mouseup', e => { if (e.button === 0) mouseSwing = false; });
+let lastMoveAt = 0;
+addEventListener('mousemove', e => {
+  if (isTouch) return;
+  if (!document.pointerLockElement) cursorX = e.clientX;   // (a locked cursor's position means nothing)
+  const now = performance.now(), since = Math.min(now - lastMoveAt, 100);
+  lastMoveAt = now;
+  if (state !== 'play') return;
+  // Chrome can report the cursor's jump to the lock point as one huge movement, and now and then a stray spike: drop a
+  // move far beyond what a hand does in the time since the last one (moves are coalesced per frame, so a fast flick at
+  // a low frame rate still gets through). The jump comes as the first move around a lock change, whenever that is: just
+  // before the lock is granted or seconds after it, so the strict cap holds until that first move has come.
+  const most = lock.pending || lock.fresh || now - lock.changedAt < 150 ? 250 : 250 + 15 * since;
+  if (e.movementX || e.movementY) lock.fresh = false;
+  if (Math.abs(e.movementX) > most || Math.abs(e.movementY) > most) return;
+  // without the lock (not granted yet, refused, or blocked here) the free cursor still looks around
+  input.lookX += e.movementX || 0; input.lookY += e.movementY || 0;
+});
+addEventListener('mouseout', e => { if (!e.relatedTarget) cursorX = -1; });
+// the free cursor stops at the window's edge; resting it in the outer 6% keeps turning that way (up to 2 rad/s)
+function edgeLook(dt) {
+  if (isTouch || cursorX < 0 || document.pointerLockElement) return;
+  const u = cursorX / innerWidth;
+  input.lookX += (u < 0.06 ? (u - 0.06) / 0.06 : u > 0.94 ? (u - 0.94) / 0.06 : 0) * 900 * dt;
+}
+const hintEl = $('mouse-hint');
+let hintText = '';
+// what a click will do without the lock: capture the mouse, or (lock unavailable) a few seconds' note on edge turning
+function mouseHint(dt) {
+  let t = '';
+  if (!isTouch && !document.pointerLockElement && clock - padUsedAt > 10) {   // (not while playing on a gamepad)
+    if (!lock.unavailable) t = lock.pending && performance.now() - lock.reqAt < 1500 ? '' : 'Click to capture the mouse';
+    else if ((lock.noteT += dt) < 6) t = 'Rest the cursor at a screen edge to keep turning';
+  }
+  if (t !== hintText) { hintText = t; hintEl.textContent = t; hintEl.hidden = !t; }
+}
+
+// Touch: a floating stick (a thumb anywhere on the lower left centres it under the thumb), buttons a thumb can slide
+// between (SWING onto JUMP drops the web and swing-jumps), and a drag anywhere else looks around.
+const stick = { id: null, x: 0, y: 0 };
+const stickEl = $('stick'), knob = $('knob');
+function grabStick(e) {
+  const h = stickEl.offsetWidth / 2;
+  stickEl.style.left = (e.clientX - h) + 'px'; stickEl.style.top = (e.clientY - h) + 'px'; stickEl.style.bottom = 'auto';
+  stick.id = e.pointerId;
+  stickEl.setPointerCapture(e.pointerId);   // the stick's own move and up handlers take it from here
+  stickEl.classList.add('on');
+  moveStick(e);
+}
+stickEl.addEventListener('pointerdown', e => { if (stick.id === null) grabStick(e); });
+stickEl.addEventListener('pointermove', e => { if (e.pointerId === stick.id) moveStick(e); });
+const endStick = e => {
+  if (e.pointerId !== stick.id) return;
+  stick.id = null; stick.x = stick.y = 0; knob.style.transform = '';
+  stickEl.style.left = stickEl.style.top = stickEl.style.bottom = ''; stickEl.classList.remove('on');
+};
+stickEl.addEventListener('pointerup', endStick);
+stickEl.addEventListener('pointercancel', endStick);
+function moveStick(e) {
+  const r = stickEl.getBoundingClientRect();
+  let dx = (e.clientX - r.left - r.width / 2) / (r.width / 2), dy = (e.clientY - r.top - r.height / 2) / (r.height / 2);
+  const l = Math.hypot(dx, dy); if (l > 1) { dx /= l; dy /= l; }
+  stick.x = dx; stick.y = dy;
+  knob.style.transform = `translate(${dx * 38}px, ${dy * 38}px)`;
+}
+// each finger holds the button it is on; sliding onto another button lets go of the first and presses the second
+const held = { swing: 0, dive: 0, jump: 0, zip: 0 }, btnEls = {}, fingers = new Map();
+const tbtns = document.querySelector('.tbtns');
+tbtns.querySelectorAll('button').forEach(b => { btnEls[b.dataset.b] = b; });
+function btnPress(b) {
+  if (held[b]++ === 0) btnEls[b].classList.add('on');
+  if (b === 'jump') input.jumpPress = true;
+  if (b === 'zip') input.zipPress = true;
+  touchSwing = held.swing > 0; touchDive = held.dive > 0;
+}
+function btnRelease(b) {
+  if (--held[b] === 0) btnEls[b].classList.remove('on');
+  touchSwing = held.swing > 0; touchDive = held.dive > 0;
+}
+tbtns.addEventListener('pointerdown', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  e.preventDefault(); audio();
+  fingers.set(e.pointerId, b.dataset.b); btnPress(b.dataset.b);
+});
+// a touch stays captured by the button it started on, so look up which button is under the finger now
+tbtns.addEventListener('pointermove', e => {
+  const was = fingers.get(e.pointerId);
+  if (!was) return;
+  const el = document.elementFromPoint(e.clientX, e.clientY), b = el && el.closest('.tbtns button');
+  if (!b || b.dataset.b === was) return;   // off the buttons: keep holding the last one
+  fingers.set(e.pointerId, b.dataset.b); btnRelease(was); btnPress(b.dataset.b);
+});
+const liftFinger = e => { const b = fingers.get(e.pointerId); if (b) { fingers.delete(e.pointerId); btnRelease(b); } };
+tbtns.addEventListener('pointerup', liftFinger);
+tbtns.addEventListener('pointercancel', liftFinger);
+const looks = new Map();
+view.addEventListener('pointerdown', e => {
+  if (!isTouch || state !== 'play') return;
+  // the stick's zone is the lower left 45%; on a portrait screen it runs on along the bottom up to the buttons, so a
+  // thumb landing just right of the ring still grabs it
+  let zoneR = innerWidth * 0.45;
+  if (innerHeight > innerWidth) { const r = tbtns.getBoundingClientRect(); if (e.clientY > r.top - 40) zoneR = Math.max(zoneR, r.left - 8); }
+  if (stick.id === null && e.clientX < zoneR && e.clientY > innerHeight * 0.3) { grabStick(e); return; }
+  looks.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
+view.addEventListener('pointermove', e => {
+  const l = looks.get(e.pointerId); if (!l) return;
+  input.lookX += (e.clientX - l.x) * 2.2; input.lookY += (e.clientY - l.y) * 2.2;
+  l.x = e.clientX; l.y = e.clientY;
+});
+const endLook = e => looks.delete(e.pointerId);
+view.addEventListener('pointerup', endLook); view.addEventListener('pointercancel', endLook);
+// Pause and mute act on pointerup, not click: a browser makes a click only from a lone finger, and these get tapped
+// with a thumb still on the stick or Swing. Only a finger that went down on the button counts.
+for (const [id, fn] of [['t-pause', pause], ['t-mute', toggleMute]]) {
+  const el = $(id);
+  let downId = null;
+  el.addEventListener('pointerdown', e => { downId = e.pointerId; });
+  el.addEventListener('pointerup', e => { if (e.pointerId === downId) { downId = null; e.preventDefault(); fn(); } });
+  el.addEventListener('pointercancel', () => { downId = null; });
+  el.addEventListener('click', e => { if (e.detail === 0) fn(); });   // (keyboard activation)
+}
+
+// gamepad (standard mapping)
+const padPrev = [], padStick = { x: 0, y: 0 };
+let padUsedAt = -1e9;   // clock time of the last gamepad input
+const padBtn = (gp, i) => !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.3));
+const padTap = (gp, i) => padBtn(gp, i) && !padPrev[i];
+const dz = v => Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85;   // dead zone, rescaled so full tilt is still 1
+function pollPad(dt) {
+  let pads = null;
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : null; } catch (err) { pads = null; }   // a permissions policy can forbid it
+  let gp = null;
+  if (pads) for (let i = 0; i < pads.length && !gp; i++) gp = pads[i] || null;
+  padSwing = padDive = false;
+  if (!gp) return null;
+  const was = state;
+  if (state === 'title' && (padTap(gp, 0) || padTap(gp, 9))) start(false);
+  else if (state === 'paused' && padTap(gp, 9)) resume(false);
+  else if (state === 'play' && padTap(gp, 9)) pause();
+  if (state === 'play' && was === 'play') {
+    padSwing = padBtn(gp, 7) || padBtn(gp, 5);
+    padDive = padBtn(gp, 1);
+    if (padTap(gp, 0)) input.jumpPress = true;
+    if (padTap(gp, 6)) input.zipPress = true;
+    // right stick, per second: full tilt turns as fast as it used to at 60 fps, whatever the frame rate
+    input.lookX += dz(gp.axes[2] || 0) * 840 * dt; input.lookY += dz(gp.axes[3] || 0) * 600 * dt;
+  }
+  for (let i = 0; i < gp.buttons.length; i++) if ((padPrev[i] = padBtn(gp, i))) padUsedAt = clock;
+  padStick.x = dz(gp.axes[0] || 0); padStick.y = dz(gp.axes[1] || 0);
+  if (padStick.x || padStick.y || dz(gp.axes[2] || 0) || dz(gp.axes[3] || 0)) padUsedAt = clock;
+  return padStick;
+}
+
+// ---------------------------------------------------------------- audio
+let actx = null, windGain = null, muted = false;
+function audio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume(); return actx; }
+  try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
+  const len = actx.sampleRate * 2, buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
+  let lastS = 0;
+  for (let i = 0; i < len; i++) { lastS = lastS * 0.97 + (Math.random() * 2 - 1) * 0.03; d[i] = lastS * 6; }
+  const src = actx.createBufferSource(); src.buffer = buf; src.loop = true;
+  const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 900;
+  windGain = actx.createGain(); windGain.gain.value = 0;
+  src.connect(f); f.connect(windGain); windGain.connect(actx.destination); src.start();
+  return actx;
+}
+function thwip(pitch = 1) {
+  if (muted || !actx) return;
+  const t = actx.currentTime, n = Math.floor(actx.sampleRate * 0.12);
+  const b = actx.createBuffer(1, n, actx.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const s = actx.createBufferSource(); s.buffer = b;
+  const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 5;
+  f.frequency.setValueAtTime(5200 * pitch, t); f.frequency.exponentialRampToValueAtTime(1100 * pitch, t + 0.1);
+  const g = actx.createGain(); g.gain.setValueAtTime(0.28, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  s.connect(f); f.connect(g); g.connect(actx.destination); s.start(t);
+}
+function chime() {
+  if (muted || !actx) return;
+  const t = actx.currentTime;
+  [988, 1319, 1760].forEach((fr, i) => {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'triangle'; o.frequency.value = fr;
+    g.gain.setValueAtTime(0.0001, t + i * 0.07);
+    g.gain.exponentialRampToValueAtTime(0.16, t + i * 0.07 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.07 + 0.25);
+    o.connect(g); g.connect(actx.destination); o.start(t + i * 0.07); o.stop(t + i * 0.07 + 0.3);
+  });
+}
+
+// ---------------------------------------------------------------- camera basis
+const camF = new V3(), camR = new V3(), lookDir = new V3();
+function camBasis() {
+  camF.set(Math.sin(cam.yaw), 0, Math.cos(cam.yaw));
+  camR.set(-Math.cos(cam.yaw), 0, Math.sin(cam.yaw));
+  lookDir.set(Math.sin(cam.yaw) * Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw) * Math.cos(cam.pitch));
+}
+function angleDiff(a, b) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return d; }
+
+// ---------------------------------------------------------------- gameplay
+const tmp = new V3(), tmp2 = new V3(), tmp3 = new V3(), moveDir = new V3();
+let tokensTaken = 0, topSpeed = 0;
+
+// 1 while velocity along the steering direction is under `top` m/s, fading to 0 at top + 4: steering turns you
+// without becoming a free engine
+function steerRoom(vel, dir, top) {
+  const m = Math.hypot(dir.x, dir.z);
+  if (m < 0.01) return 0;
+  return clamp((top + 4 - (vel.x * dir.x + vel.z * dir.z) / m) / 4, 0, 1);
+}
+// The city edge: past the outermost facades there's only a strip of waterfront, then the invisible boundary. In the
+// air, steering out of the city fades out over the last 30-20 m (it could only press you into the boundary)...
+function edgeSteer(v) {
+  const kx = clamp((Math.abs(p.pos.x) - HALF + 30) / 10, 0, 1), kz = clamp((Math.abs(p.pos.z) - HALF + 30) / 10, 0, 1);
+  if (v.x * p.pos.x > 0) v.x *= 1 - kx;
+  if (v.z * p.pos.z > 0) v.z *= 1 - kz;
+}
+// ...and within 30 m of it, a direction to look for webs or leap in loses its part pointing out of the city, so the hero
+// follows the shoreline. One pointing straight out turns along the edge toward the city centre's side (the way the
+// camera's edge turn goes), and in a corner toward the centre itself. Returns v normalized.
+function edgeAim(v) {
+  const ex = Math.abs(p.pos.x) > HALF - 30, ez = Math.abs(p.pos.z) > HALF - 30;
+  if (ex && v.x * p.pos.x > 0) v.x = 0;
+  if (ez && v.z * p.pos.z > 0) v.z = 0;
+  if ((ex || ez) && v.x * v.x + v.z * v.z < 0.04) { v.x = ez ? (p.pos.x > 0 ? -1 : 1) : 0; v.z = ex ? (p.pos.z > 0 ? -1 : 1) : 0; }
+  return v.normalize();
+}
+// Swing physics, shared by the live swing and by the anchor check's look-ahead.
+// w = { pivot, len, goal, age }: pivot is the physics fulcrum (see setPivot), goal the length the rope reels in to.
+function ropeStep(pos, vel, w, travel, dt) {
+  const hs = Math.hypot(vel.x, vel.z);
+  vel.y -= G * dt;
+  // steering bends the swing; it adds no speed in a direction you already move fast in
+  vel.addScaledVector(moveDir, 16 * dt * steerRoom(vel, moveDir, 20));
+  // steering assist: drift off the travel line is bled off and handed to forward speed, so it turns the swing without
+  // braking it (moving against the line, it's only bled off)
+  const along = vel.x * travel.x + vel.z * travel.z, hs0 = Math.hypot(vel.x, vel.z);
+  const lx = vel.x - travel.x * along, lz = vel.z - travel.z * along;
+  const k = 1 - Math.exp(-ASSIST * dt), gain = Math.hypot(lx, lz) * k * 0.8;
+  vel.x -= lx * k; vel.z -= lz * k;
+  if (along > 0) {
+    vel.x += travel.x * gain; vel.z += travel.z * gain;
+    const hs1 = Math.hypot(vel.x, vel.z);
+    if (hs1 > 0.1 && hs1 < hs0) { vel.x *= hs0 / hs1; vel.z *= hs0 / hs1; }
+  }
+  // the downswing pushes toward cruise speed so chains keep flowing; well above it, the swing slowly bleeds speed
+  if (vel.y < 0 && hs > 2 && hs < CRUISE) { vel.x += vel.x / hs * 12 * dt; vel.z += vel.z / hs * 12 * dt; }
+  const sp = vel.length(), over = sp - CRUISE - 6;
+  if (over > 0 && sp < MAX_SPEED) vel.multiplyScalar(1 - over / sp * 0.5 * dt);
+  w.age += dt;
+  if (w.len > w.goal) w.len = Math.max(w.goal, w.len - REEL_RATE * dt);
+  pos.addScaledVector(vel, dt);
+  const d = tmp3.subVectors(pos, w.pivot), dist = d.length();
+  // the rope takes in slack as you move toward the fulcrum, so it never snaps tight from far out
+  if (dist < w.len) w.len = Math.max(ROPE_MIN, dist);
+  if (dist > w.len) {
+    d.multiplyScalar(1 / dist);
+    const vr = vel.dot(d), take = Math.min(Math.max(vr, 0), ROPE_PULL * dt);
+    if (take > 0) {
+      // a taut rope turns speed along the arc instead of deleting it
+      const sp0 = vel.length();
+      vel.addScaledVector(d, -take);
+      const sp1 = vel.length();
+      if (sp1 > 0.5) vel.multiplyScalar(sp0 / sp1);
+    }
+    // a hard catch is spread over a few steps (the rope gives a little) instead of yanking in one
+    if (take < vr) w.len = dist;
+    else pos.copy(w.pivot).addScaledVector(d, w.len);
+  }
+}
+// past the forward apex, level with the fulcrum, or circling it: let go so the next web can take over
+function swingDone(pos, vel, w) {
+  if (pos.y > w.pivot.y - 1.5 || w.age > 2.6) return true;
+  const h = Math.hypot(vel.x, vel.z);
+  if (h < 2 || w.age < 0.35 || vel.y < -1) return false;
+  return w.age > 1.6 || ((pos.x - w.pivot.x) * vel.x + (pos.z - w.pivot.z) * vel.z) / h > w.len * 0.38;
+}
+// rope angle past the bottom of the arc, measured along the direction of travel (negative on the way down)
+function swingTheta(w) {
+  const h = Math.hypot(p.vel.x, p.vel.z);
+  const ahead = h > 0.5 ? ((p.pos.x - w.pivot.x) * p.vel.x + (p.pos.z - w.pivot.z) * p.vel.z) / h : 0;
+  return Math.atan2(ahead, Math.max(0.1, w.pivot.y - p.pos.y));
+}
+
+const aheadPos = new V3(), aheadVel = new V3(), aheadTravel = new V3(), aheadWeb = { pivot: new V3(), len: 0, goal: 0, age: 0 };
+// follow a candidate swing until it would let go: seconds until it runs into a building or down to the street, else Infinity
+function swingContact(pivot, len, goal) {
+  aheadPos.copy(p.pos); aheadVel.copy(p.vel);
+  aheadWeb.pivot.copy(pivot); aheadWeb.len = len; aheadWeb.goal = goal; aheadWeb.age = 0;
+  aheadTravel.copy(pref);
+  for (let i = 1; i <= 66; i++) {
+    steerTravel(aheadTravel, 1 / 30);
+    ropeStep(aheadPos, aheadVel, aheadWeb, aheadTravel, 1 / 30);
+    if (aheadPos.y < R + 0.4 || sphereHits(aheadPos, R + 0.25)) return i / 30;
+    if (Math.abs(aheadPos.x) > HALF - R - 0.5 || Math.abs(aheadPos.z) > HALF - R - 0.5) return i / 30;   // into the city boundary
+    if (swingDone(aheadPos, aheadVel, aheadWeb)) return Infinity;
+  }
+  return Infinity;
+}
+
+// Anchors are real points on building faces that face the hero, preferring the roofline, a little ahead and to the side.
+const CAND_MAX = 600;
+const cand = Array.from({ length: CAND_MAX }, () => ({ c: new V3(), nx: 0, nz: 0, score: 0 }));
+const candOrder = [];
+let candN = 0;
+const pref = new V3(), ideal = new V3(), handPt = new V3();
+const found = { anchor: new V3(), pivot: new V3(), len: 0, goal: 0 };
+function gatherFaces(b, fwdMin) {
+  if (b.prop) return;
+  const px = p.pos.x, pz = p.pos.z, minFwd = 14 - 0.2 * Math.hypot(p.vel.x, p.vel.z);
+  for (let k = 0; k < 4; k++) {
+    // k: 0 = -x face, 1 = +x face, 2 = -z face, 3 = +z face. A web can't reach a face the hero is behind.
+    if (k === 0 ? px > b.minX - 0.5 : k === 1 ? px < b.maxX + 0.5 : k === 2 ? pz > b.minZ - 0.5 : pz < b.maxZ + 0.5) continue;
+    let y = clamp(ideal.y, b.minY + 2, b.maxY);
+    if (b.maxY - y < 8) y = b.maxY;
+    if (y < p.pos.y + 5 || y < ROPE_MIN + STREET_CLEAR) continue;
+    const out = y > b.maxY - 1.05 ? 0.6 : 0;   // on the cornice, which overhangs the wall
+    let x, z;
+    if (k < 2) { x = k === 0 ? b.minX - out : b.maxX + out; z = clamp(ideal.z, b.minZ + 0.4, b.maxZ - 0.4); }
+    else { z = k === 2 ? b.minZ - out : b.maxZ + out; x = clamp(ideal.x, b.minX + 0.4, b.maxX - 0.4); }
+    const dx = x - px, dy = y - p.pos.y, dz = z - pz;
+    const L = Math.hypot(dx, dy, dz);
+    if (L < 8 || L > 85) continue;
+    const fwd = dx * pref.x + dz * pref.z;
+    if (fwd < fwdMin) continue;
+    const side = Math.abs(dx * pref.z - dz * pref.x);
+    const facing = k === 0 ? -pref.x : k === 1 ? pref.x : k === 2 ? -pref.z : pref.z;   // face normal . travel
+    let score = Math.hypot(x - ideal.x, y - ideal.y, z - ideal.z) + 0.5 * Math.max(0, side - 14);
+    score += 1.5 * Math.max(0, minFwd - fwd);   // an anchor nearly overhead gives a slow start no swing to speak of
+    if (facing < -0.6) score += 8;   // a wall square across the path: the swing would carry you into it
+    if (y === b.maxY) score -= 3;
+    if (candN < CAND_MAX) { const o = cand[candN++]; o.c.set(x, y, z); o.nx = k === 0 ? -1 : k === 1 ? 1 : 0; o.nz = k === 2 ? -1 : k === 3 ? 1 : 0; o.score = score; }
+  }
+}
+const streetRay = new V3(), streetFrom = new V3();
+let pivotHeld = false;   // the last setPivot held the fulcrum in to PIVOT_OPEN from its anchor, short of the hero's line
+// The swing's fulcrum. For a facade alongside the travel line it sits over the middle of the street, so the swing
+// carries you down the street instead of pulling you into the wall; otherwise it's the anchor with most of its
+// sideways offset from the travel line removed. With nothing across the street (a park, the waterfront) it sits over
+// the hero's line. Either way it moves no more than PIVOT_OPEN from the anchor (6 m more if `open`): much further, the
+// hero would hang under empty air with the drawn web running off level to the facade.
+function setPivot(o, out, open) {
+  const c = o.c, dx = c.x - p.pos.x, dz = c.z - p.pos.z, cap = open ? PIVOT_OPEN + 6 : PIVOT_OPEN;
+  pivotHeld = false;
+  if (Math.abs(o.nx * pref.x + o.nz * pref.z) < 0.5) {
+    const heroOff = -(dx * o.nx + dz * o.nz);
+    streetFrom.set(c.x + o.nx * 0.1, clamp(p.pos.y, 2, c.y - 1), c.z + o.nz * 0.1);
+    const hit = raycast(streetFrom, streetRay.set(o.nx, 0, o.nz), 50);
+    pivotHeld = !hit && !open && heroOff > cap;
+    const off = hit ? hit.t / 2 : clamp(heroOff, 6, cap);
+    out.set(c.x + o.nx * off, c.y, c.z + o.nz * off);
+  } else {
+    const f = dx * pref.x + dz * pref.z, lx = dx - pref.x * f, lz = dz - pref.z * f;
+    const side = Math.hypot(lx, lz) * (1 - LAT_KEEP);
+    pivotHeld = !open && side > cap;
+    const k = (1 - LAT_KEEP) * Math.min(1, cap / Math.max(side, 1e-6));
+    out.set(c.x - lx * k, c.y, c.z - lz * k);
+  }
+  // never out over the city boundary: at most over the middle of the waterfront strip
+  out.x = clamp(out.x, 5.5 - HALF, HALF - 5.5); out.z = clamp(out.z, 5.5 - HALF, HALF - 5.5);
+}
+// the web for candidate o: the rope starts at its true length and reels toward 90%, but never so long it reaches the street
+function fillFound(o, open) {
+  setPivot(o, found.pivot, open);
+  found.len = p.pos.distanceTo(found.pivot);
+  found.goal = Math.max(ROPE_MIN, Math.min(found.len * REEL_FRAC, found.pivot.y - STREET_CLEAR));
+  found.anchor.copy(o.c);
+  return found;
+}
+// Best gathered candidate the hero can see and whose swing stays clear. With `lateOk`, a swing that only touches
+// something after a full second is the fallback when nothing is clear. With `noBack`, a swing that ends heading back
+// the way the hero is moving doesn't count.
+function pickAnchor(arcChecks, lateOk, noBack) {
+  candOrder.length = 0;
+  for (let i = 0; i < candN; i++) candOrder.push(i);
+  candOrder.sort((a, b) => cand[a].score - cand[b].score);
+  handPt.copy(p.pos); handPt.y += 0.6;
+  let sights = 0, arcs = 0, late = -1, lateT = 1, lateOpen = false;
+  for (const i of candOrder) {
+    if (++sights > 30 || arcs >= arcChecks) break;
+    if (segmentBlocked(handPt, cand[i].c, 0.3)) continue;
+    for (let open = false; ; open = true) {
+      fillFound(cand[i], open);
+      if (found.len < ROPE_MIN) break;   // a fulcrum right by the hero: too short a rope to swing on
+      arcs++;
+      const t = swingContact(found.pivot, found.len, found.goal);
+      if (!noBack || aheadVel.x * p.vel.x + aheadVel.z * p.vel.z >= 0) {
+        if (t === Infinity) return found;
+        if (lateOk && t > lateT) { late = i; lateT = t; lateOpen = open; }
+      }
+      // a fulcrum held in toward its anchor can swing the hero into the facade: then try it further out after all
+      if (open || !pivotHeld) break;
+    }
+  }
+  return late < 0 ? null : fillFound(cand[late], lateOpen);
+}
+function findAnchor() {
+  const hs = Math.hypot(p.vel.x, p.vel.z);
+  if (hs > 4) pref.set(p.vel.x / hs, 0, p.vel.z / hs); else pref.copy(camF);
+  if (moveDir.lengthSq() > 0.01) {
+    tmp2.set(moveDir.x, 0, moveDir.z).normalize();
+    if (tmp2.dot(pref) < -0.3) pref.copy(tmp2);   // turning around: aim where the stick points
+    else pref.addScaledVector(tmp2, 0.9).normalize();
+  }
+  edgeAim(pref);   // not out to sea: there's nothing to swing from out there
+  // the streets run along x and z: a heading within 30 degrees of one follows that street
+  if (Math.abs(pref.x) > 0.866) pref.set(Math.sign(pref.x), 0, 0);
+  else if (Math.abs(pref.z) > 0.866) pref.set(0, 0, Math.sign(pref.z));
+  if (p.vel.y < -20) {
+    // dive catch: anchor at right angles to the fall, so the rope turns the dive into swing speed
+    tmp2.copy(p.vel).normalize();
+    ideal.set(0, 1, 0).addScaledVector(tmp2, -tmp2.y);
+    if (ideal.lengthSq() < 0.05) ideal.set(pref.x, 1, pref.z);
+    ideal.normalize().multiplyScalar(28).add(p.pos).addScaledVector(pref, 6);
+  } else {
+    ideal.copy(p.pos).addScaledVector(pref, 18 + hs * 0.3);
+    ideal.y += 14 + Math.min(hs, 60) * 0.25;
+  }
+  // near the ideal point first, then anything ahead of or beside the hero; over open ground a swing that only
+  // touches a building late is better than none (hitting a wall mid-swing turns into a wall run)
+  candN = 0;
+  for (const b of query(ideal.x, ideal.z, 50)) gatherFaces(b, 2);
+  if (pickAnchor(8, false)) return found;
+  candN = 0;
+  for (const b of query(p.pos.x, p.pos.z, 80)) gatherFaces(b, -6);
+  const a = pickAnchor(10, true);
+  if (a || p.vel.y > -15) return a;
+  // falling fast with nothing ahead: a facade behind will do (dropped or bounded off a tower, he webs that tower and
+  // swings out). Moving on fast otherwise (a dive, a chain), a swing that throws him back the way he came is worse
+  // than the retry, which finds the next anchor ahead a few frames on.
+  candN = 0;
+  for (const b of query(p.pos.x, p.pos.z, 60)) gatherFaces(b, -30);
+  return pickAnchor(6, true, hs > 15 && p.leaps === 0);
+}
+
+function attach() {
+  const a = findAnchor();
+  if (!a) { p.reattach = 0.15; return false; }
+  p.web = { anchor: a.anchor.clone(), pivot: a.pivot.clone(), len: a.len, goal: a.goal, age: 0, t0: simTime, tick: 0, sky: false };
+  p.travel.copy(pref);
+  p.airZips = 2; p.webAt = simTime; p.leaps = 0;
+  thwip(1 + Math.random() * 0.15);
+  return true;
+}
+// distance along the horizontal unit d to the edge of the roof the hero stands on (0 off a roof)
+function roofRunout(d) {
+  for (const b of query(p.pos.x, p.pos.z, 0)) {
+    if (p.pos.x < b.minX || p.pos.x > b.maxX || p.pos.z < b.minZ || p.pos.z > b.maxZ || Math.abs(b.maxY + R - p.pos.y) > 0.3) continue;
+    const tx = d.x > 1e-6 ? (b.maxX - p.pos.x) / d.x : d.x < -1e-6 ? (b.minX - p.pos.x) / d.x : Infinity;
+    const tz = d.z > 1e-6 ? (b.maxZ - p.pos.z) / d.z : d.z < -1e-6 ? (b.minZ - p.pos.z) / d.z : Infinity;
+    return Math.min(tx, tz);
+  }
+  return 0;
+}
+// Swing held on the ground: leap up and forward into the swing. When the last leap found nothing to web to (a roof
+// that tops everything near it), bound off the roof's edge instead, so the swing starts on the drop.
+function leap() {
+  const d = tmp.set(moveDir.x, 0, moveDir.z);
+  if (d.lengthSq() < 0.01) d.set(camF.x, 0, camF.z);
+  edgeAim(d);
+  if (p.leaps > 0) {
+    // fast enough to clear the edge in one bound (about 0.8 s in the air)
+    const sp = Math.max(clamp((roofRunout(d) + 2) * 1.3, 8, 28), p.vel.dot(d));
+    p.vel.set(d.x * sp, 10, d.z * sp);
+  } else { p.vel.addScaledVector(d, 6); p.vel.y = 14; }
+  p.leaps++;
+  p.onGround = false; p.reattach = 0.12;
+}
+function release() {
+  if (!p.web) return;
+  p.releaseAt = simTime; p.releaseTheta = swingTheta(p.web);
+  p.web = null;
+}
+// swing jump: just past the bottom of the arc sends you forward fastest, a later release gives more height
+function swingJump(theta) {
+  const q = clamp(1 - Math.abs(theta - 0.45) / 0.35, 0, 1);
+  const h = tmp.set(p.vel.x, 0, p.vel.z);
+  if (h.lengthSq() > 1) h.normalize(); else h.copy(camF);
+  p.web = null; jumpBuf = 0; p.releaseAt = -9;
+  p.vel.y = Math.max(p.vel.y, 4) + 9 + 9 * clamp(theta, 0, 1);
+  p.vel.addScaledVector(h, 6 + 10 * q);
+  p.reattach = 0.45; p.airZips = 2;
+  const perfect = q > 0.8;
+  p.trickAt = simTime; p.trickPerfect = perfect;
+  thwip(perfect ? 0.75 : 0.6);
+  showToast(perfect ? 'PERFECT SWING JUMP' : 'SWING JUMP');
+}
+// web zip in open air: a quick pull forward along the view, for when there's nothing to swing from
+function airZip() {
+  const d = tmp.copy(lookDir);
+  d.y = Math.max(d.y, 0) + 0.3; d.normalize();
+  const sp = Math.max(Math.hypot(p.vel.x, p.vel.z), 26);
+  p.vel.copy(d).multiplyScalar(sp); p.vel.y = Math.max(p.vel.y, 8);
+  p.airZips--; jumpBuf = 0; p.reattach = Math.max(p.reattach, 0.2);
+  const hit = raycast(p.pos, d, 25);
+  p.zipFxPoint.copy(p.pos).addScaledVector(d, hit ? hit.t : 18);
+  p.zipFx = 0.2;
+  thwip(1.2);
+}
+// ground or a roof close enough below, at this fall speed, that a jump pressed now is meant for the landing
+function landingSoon() {
+  if (p.vel.y > 0) return false;
+  let floor = 0;
+  for (const b of query(p.pos.x, p.pos.z, 0))
+    if (!b.tree && p.pos.x > b.minX && p.pos.x < b.maxX && p.pos.z > b.minZ && p.pos.z < b.maxZ && b.maxY <= p.pos.y) floor = Math.max(floor, b.maxY);
+  return p.pos.y - R - floor < 0.3 - p.vel.y * JUMP_BUFFER;
+}
+
+let zipTarget = null;
+const ZIP_MIN = 6;   // a zip target closer than this is no zip (no ring or crosshair shows it either)
+const zipT = { point: new V3(), show: new V3(), launch: false };
+const zipRay = new V3(), zipFrom = new V3();
+function updateZipTarget() {
+  zipTarget = null;
+  // aim down the real camera ray, starting level with the hero: a camera pulled in by a wall must not start it inside a building
+  camera.getWorldDirection(zipRay);
+  zipFrom.copy(camera.position).addScaledVector(zipRay, Math.max(0, tmp2.subVectors(p.pos, camera.position).dot(zipRay)));
+  let hit = raycast(zipFrom, zipRay, 150), left = 150;
+  // a tree trunk's top is inside its crown, nothing to zip to: aim on past it, as the ray already passes through crowns
+  // (cast again from just inside the trunk, which the ray then skips)
+  for (let k = 0; hit && hit.box.tree && k < 4; k++) {
+    const t = hit.t + 0.05;
+    left -= t; zipFrom.addScaledVector(zipRay, t);
+    hit = left > 0 ? raycast(zipFrom, zipRay, left) : null;
+  }
+  if (!hit || hit.box.tree) return;
+  const b = hit.box;
+  // a ledge: a roof, the top of a wall, or (wall running) the top of the wall being climbed, if it isn't too far up
+  const climbing = p.wallRun && b === p.wallRun.box && b.maxY - p.pos.y < 120;
+  if (hit.n.y > 0 || (hit.n.y === 0 && (hit.p.y > b.maxY - 7 || climbing))) {
+    zipT.point.set(hit.p.x, b.maxY + R + 0.2, hit.p.z);
+    if (hit.n.y === 0) zipT.point.addScaledVector(hit.n, -0.8);
+    zipT.show.set(zipT.point.x, b.maxY + 0.4, zipT.point.z);
+    zipT.launch = true;
+  } else {
+    zipT.point.copy(hit.p).addScaledVector(hit.n, R - 0.05);   // just inside touching distance, so you land against it
+    zipT.show.copy(hit.p).addScaledVector(hit.n, 0.1);
+    zipT.launch = false;
+  }
+  zipTarget = zipT;
+}
+function startZip() {
+  p.web = null; p.wallRun = null; zipBuf = 0;
+  p.zip = { target: zipTarget.point.clone(), launch: zipTarget.launch, t: 0, lastD: 1e9, stall: 0, speed: 0 };
+  thwip(0.8); setTimeout(() => thwip(0.85), 60);
+}
+function zipMove(dt) {
+  const z = p.zip;
+  z.t += dt;
+  tmp.subVectors(z.target, p.pos);
+  const d = tmp.length(), sp = clamp(d * 8, 6, 70);
+  z.speed = Math.max(z.speed, sp);
+  p.vel.copy(tmp).multiplyScalar(Math.min(sp, d / dt) / Math.max(d, 0.001));   // never overshoot the point
+  p.pos.addScaledVector(p.vel, dt);
+  collide();
+  // snagged on something on the way: stop rather than grind against it until the timeout
+  z.stall = z.lastD - d < 0.02 ? z.stall + dt : 0;
+  z.lastD = d;
+  if (z.launch) {
+    // a launch fires on the way in; a perch settles right on the point
+    if (d < (jumpBuf > 0 || input.swing ? 1.5 : 0.35)) zipArrive(true);
+    else if (z.t > 3 || z.stall > 0.15) zipArrive(false);
+  } else if ((p.wallN && d < 4) || z.t > 3 || z.stall > 0.15) zipArrive(false);
+}
+function zipArrive(reached) {
+  const z = p.zip;
+  p.zip = null; p.reattach = 0.25;
+  if (z.launch && reached) {
+    // a ledge launches you if Jump was just pressed or swing is held; otherwise you perch, and Jump right away still launches
+    if (jumpBuf > 0 || input.swing) pointLaunch(z.speed, jumpBuf > 0 && simTime - jumpAt < 0.08);
+    else { p.vel.set(0, 0, 0); p.perchAt = simTime; p.perchSpeed = z.speed; }
+  } else if (p.wallN && p.wallCool <= 0) {
+    p.vel.set(0, 0, 0);
+    startWallRun(0);   // cling where the zip landed
+  } else p.vel.multiplyScalar(0.3);
+}
+function pointLaunch(speed, perfect) {
+  const k = perfect ? 1.25 : 1;
+  p.vel.copy(camF).multiplyScalar(Math.max(18, speed * 0.4) * k);
+  p.vel.y = 24 * k;
+  p.onGround = false; p.perchAt = -9; p.wallCool = 0.3; p.jumpN.set(0, 0, 0); jumpBuf = 0; p.airZips = 2;
+  if (perfect) { p.trickAt = simTime; p.trickPerfect = true; }
+  thwip(0.7);
+  showToast(perfect ? 'PERFECT LAUNCH' : 'POINT LAUNCH');
+}
+
+const wallNormal = new V3();
+function collide() {
+  p.onGround = false; p.wallN = null; p.wallBox = null; p.wallHit = 0;
+  if (p.pos.y < R) { p.pos.y = R; if (p.vel.y < 0) p.vel.y = 0; p.onGround = true; }
+  for (const b of query(p.pos.x, p.pos.z, R)) {
+    const cx = clamp(p.pos.x, b.minX, b.maxX), cy = clamp(p.pos.y, b.minY, b.maxY), cz = clamp(p.pos.z, b.minZ, b.maxZ);
+    const dx = p.pos.x - cx, dy = p.pos.y - cy, dz = p.pos.z - cz;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 >= R * R) continue;
+    if (b.tree) { pushOffTrunk(b, dx, dy, dz); continue; }
+    let nx, ny, nz;
+    if (d2 > 1e-8) {
+      const d = Math.sqrt(d2); nx = dx / d; ny = dy / d; nz = dz / d;
+      p.pos.set(cx + nx * R, cy + ny * R, cz + nz * R);
+    } else {
+      // centre inside the box: leave through the face it came in by this step, else the shallowest one
+      const pen = [p.pos.x - b.minX, b.maxX - p.pos.x, p.pos.z - b.minZ, b.maxZ - p.pos.z, b.maxY - p.pos.y];
+      const came = [p.prev.x <= b.minX, p.prev.x >= b.maxX, p.prev.z <= b.minZ, p.prev.z >= b.maxZ, p.prev.y >= b.maxY];
+      let k = -1;
+      for (let i = 0; i < 5; i++) if (came[i] && (k < 0 || pen[i] < pen[k])) k = i;
+      if (k < 0) k = pen.indexOf(Math.min(...pen));
+      nx = k === 0 ? -1 : k === 1 ? 1 : 0; nz = k === 2 ? -1 : k === 3 ? 1 : 0; ny = k === 4 ? 1 : 0;
+      if (k === 0) p.pos.x = b.minX - R; else if (k === 1) p.pos.x = b.maxX + R;
+      else if (k === 2) p.pos.z = b.minZ - R; else if (k === 3) p.pos.z = b.maxZ + R; else p.pos.y = b.maxY + R;
+    }
+    const vn = p.vel.x * nx + p.vel.y * ny + p.vel.z * nz;
+    if (vn < 0) { p.vel.x -= nx * vn; p.vel.y -= ny * vn; p.vel.z -= nz * vn; }
+    if (ny > 0.6) p.onGround = true;
+    else if (Math.abs(ny) < 0.3) {
+      p.wallN = wallNormal.set(nx, 0, nz).normalize(); p.wallBox = b;
+      if (vn < 0) p.wallHit = Math.max(p.wallHit, -vn);
+    }
+  }
+  // city edge: a soft bounce back in, so you're never pinned against it with speed you can't use
+  const lim = HALF - R;
+  if (Math.abs(p.pos.x) > lim) { p.pos.x = Math.sign(p.pos.x) * lim; if (p.vel.x * p.pos.x > 0) p.vel.x *= -0.3; }
+  if (Math.abs(p.pos.z) > lim) { p.pos.z = Math.sign(p.pos.z) * lim; if (p.vel.z * p.pos.z > 0) p.vel.z *= -0.3; }
+}
+
+// A tree trunk only pushes you aside, never up: its top is inside the crown (nothing to stand on), and there's nothing
+// to run up or cling to. (dx, dy, dz): from the trunk's nearest point to the hero.
+function pushOffTrunk(b, dx, dy, dz) {
+  const need = Math.sqrt(R * R - dy * dy);   // the sideways gap that clears the sphere at this height
+  let h = Math.hypot(dx, dz);
+  if (h > 1e-4) {
+    dx /= h; dz /= h;
+  } else {
+    // centre over (or in) the trunk: off the side it's nearest, else the way he's going
+    const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
+    dx = p.pos.x - cx; dz = p.pos.z - cz; h = Math.hypot(dx, dz);
+    if (h < 1e-4) { dx = p.vel.x; dz = p.vel.z; h = Math.hypot(dx, dz); if (h < 1e-4) { dx = 1; dz = 0; h = 1; } }
+    dx /= h; dz /= h;
+    const edge = Math.min((b.maxX - cx) / Math.max(Math.abs(dx), 1e-4), (b.maxZ - cz) / Math.max(Math.abs(dz), 1e-4));
+    p.pos.x = cx + dx * edge; p.pos.z = cz + dz * edge; h = 0;
+  }
+  p.pos.x += dx * (need - h); p.pos.z += dz * (need - h);
+  const vn = p.vel.x * dx + p.vel.z * dz;
+  if (vn < 0) { p.vel.x -= dx * vn; p.vel.z -= dz * vn; }
+}
+function startWallRun(carried) {
+  p.wallRun = { n: p.wallN.clone(), box: p.wallBox, lost: 0, climb: clamp(carried * 0.7, 18, 40) };
+  if (p.wallHit > 5) p.vel.y = Math.max(p.vel.y, 0) + Math.min(40, 0.7 * p.wallHit);   // a slam into the wall turns into climb
+  p.airZips = 2;
+  if (carried > 3) showToast('WALL RUN');
+}
+function wallJump() {
+  const n = p.wallRun.n;
+  // only the along-the-wall part of the view, so looking at the wall doesn't cancel the push-off
+  tmp.copy(camF).addScaledVector(n, -camF.dot(n));
+  p.vel.copy(tmp).multiplyScalar(6).addScaledVector(n, 16); p.vel.y = 13;
+  p.jumpN.copy(n); p.wallRun = null; p.wallCool = 0.6; jumpBuf = 0;
+}
+function kickOff(swingNow) {
+  const n = p.wallRun.n;
+  p.vel.addScaledVector(n, 9); p.vel.y = Math.max(p.vel.y, 8);
+  p.jumpN.copy(n); p.wallRun = null; p.wallCool = 0.35;
+  if (swingNow) p.reattach = 0;
+}
+
+// the travel line turns toward the stick while swinging
+function steerTravel(travel, dt) {
+  if (moveDir.lengthSq() < 0.01) return;
+  const a = Math.atan2(travel.x, travel.z);
+  const b = a + angleDiff(a, Math.atan2(moveDir.x, moveDir.z)) * (1 - Math.exp(-2.5 * dt));
+  travel.set(Math.sin(b), 0, Math.cos(b));
+}
+// While swinging, the travel line also stays within TRAVEL_SPREAD of where the swing is carrying the hero. Steered
+// further off (the stick held away from the web's side, a hard mouse turn), the rope would carry him one way while the
+// assist pulls the other: it would bleed off his speed until he hung nearly still up the side of the arc. Near the city
+// edge the line first loses its part pointing out of the city (edgeAim), so a swing out toward the edge turns along it
+// at speed instead of carrying him into the boundary. (The anchor look-ahead in swingContact steers without either;
+// with the 60 degree limit in it too, chains measured worse.)
+const TRAVEL_SPREAD = 1.05;   // 60 degrees
+function webMove(dt) {
+  steerTravel(p.travel, dt);
+  edgeAim(p.travel);
+  if (Math.hypot(p.vel.x, p.vel.z) > 5) {
+    const h = Math.atan2(p.vel.x, p.vel.z), d = angleDiff(h, Math.atan2(p.travel.x, p.travel.z));
+    if (Math.abs(d) > TRAVEL_SPREAD) { const b = h + Math.sign(d) * TRAVEL_SPREAD; p.travel.set(Math.sin(b), 0, Math.cos(b)); }
+  }
+  ropeStep(p.pos, p.vel, p.web, p.travel, dt);
+}
+// Wall run: W (into the wall) or a held swing climbs, A/D run along it, no input clings, S or a fresh swing press kicks off.
+function wallMove(dt, tap) {
+  const wr = p.wallRun, n = wr.n;
+  if (jumpBuf > 0) wallJump();
+  else if (tap || moveDir.dot(n) > 0.3) kickOff(tap);
+  else {
+    const t = tmp.set(-n.z, 0, n.x);
+    const side = moveDir.dot(t), climbing = input.swing || -moveDir.dot(n) > 0.3;
+    let vt = p.vel.dot(t), vu = p.vel.y;
+    wr.climb = Math.max(18, wr.climb - 20 * dt);
+    const goalT = Math.abs(side) > 0.2 ? side * 16 : input.swing ? vt * (1 - 0.6 * dt) : 0;
+    vt += clamp(goalT - vt, -30 * dt, 30 * dt);
+    vu += clamp((climbing ? wr.climb : 0) - vu, -60 * dt, 120 * dt);   // a fall is caught quickly, the climb builds up
+    p.vel.copy(t).multiplyScalar(vt).addScaledVector(n, -3);
+    p.vel.y = vu;
+  }
+  p.pos.addScaledVector(p.vel, dt);
+}
+function groundMove(dt) {
+  const hsp = Math.hypot(p.vel.x, p.vel.z), run = moveDir.lengthSq() > 0.01;
+  p.runTime = run ? p.runTime + dt : 0;
+  if (run && hsp > 20) p.runTime = Math.max(p.runTime, 1.5);   // landing fast with a direction held rolls into a full run
+  const top = 12 + Math.min(p.runTime, 1.5) * 7;
+  // braking grows with the excess speed, so a landing sticks instead of skating off the roof
+  const a = ((run ? 60 : 40) + Math.max(0, hsp - top) * 5) * dt;
+  const dx = moveDir.x * top - p.vel.x, dz = moveDir.z * top - p.vel.z, dl = Math.hypot(dx, dz);
+  const k = dl > a ? a / dl : 1;
+  p.vel.x += dx * k; p.vel.z += dz * k;
+  if (jumpBuf > 0) {
+    if (simTime - p.perchAt < 0.25) pointLaunch(p.perchSpeed, simTime - p.perchAt < 0.08);
+    else { p.vel.y = 15 + Math.min(hsp, 20) * 0.2; jumpBuf = 0; }
+  }
+  p.vel.y -= G * dt;
+  p.pos.addScaledVector(p.vel, dt);
+  p.airZips = 2;
+}
+function airMove(dt) {
+  if (jumpBuf > 0) {
+    if (simTime - p.releaseAt < WEB_GRACE) swingJump(p.releaseTheta);
+    else if (p.airZips > 0 && !landingSoon()) airZip();
+  }
+  const steer = tmp2.copy(moveDir);
+  const into = steer.dot(p.jumpN);
+  if (into < 0) steer.addScaledVector(p.jumpN, -into);   // just left a wall: don't steer straight back onto it
+  const vy = p.vel.y;
+  const gMul = input.dive ? 2.2 : Math.abs(vy) < 5 ? 0.6 : vy < 0 ? 1.2 : 1;   // float at the apex, drop faster after it
+  p.vel.y -= G * dt * gMul;
+  p.vel.addScaledVector(steer, 18 * dt * steerRoom(p.vel, steer, 14));
+  if (input.dive) p.vel.addScaledVector(camF, 10 * dt);
+  p.vel.y = Math.max(p.vel.y, -110);
+  p.vel.x *= 1 - 0.08 * dt; p.vel.z *= 1 - 0.08 * dt;
+  p.pos.addScaledVector(p.vel, dt);
+}
+
+// one fixed physics step
+function step(dt) {
+  simTime += dt;
+  p.reattach -= dt; p.wallCool -= dt;
+  if (p.wallCool <= 0) p.jumpN.set(0, 0, 0);
+  jumpBuf = Math.max(0, jumpBuf - dt); zipBuf = Math.max(0, zipBuf - dt);
+  const tap = swingTap;
+  swingTap = false;
+
+  if (zipBuf > 0 && zipTarget && !p.zip && zipTarget.point.distanceTo(p.pos) > ZIP_MIN) startZip();
+  if (p.zip) { zipMove(dt); return; }
+
+  if (input.swing && !p.web && !p.wallRun && p.reattach <= 0) {
+    if (p.onGround) leap();
+    else attach();
+  }
+  if (!input.swing && p.web) release();
+  // a jump pressed during this web, or just after the last one let go
+  if (p.web && jumpBuf > 0 && (jumpAt >= p.web.t0 || simTime - p.releaseAt < WEB_GRACE))
+    swingJump(p.web.age < 0.2 && simTime - p.releaseAt < WEB_GRACE ? p.releaseTheta : swingTheta(p.web));
+
+  if (p.web) webMove(dt);
+  else if (p.wallRun) wallMove(dt, tap);
+  else if (p.onGround) groundMove(dt);
+  else airMove(dt);
+
+  // soft speed cap: excess speed bleeds off over about a second instead of being cut in one frame
+  const s = p.vel.length();
+  if (s > MAX_SPEED) p.vel.multiplyScalar(Math.max(MAX_SPEED / s, 1 - (input.dive ? 0.15 : 0.6) * dt));
+
+  const before = p.vel.length();
+  collide();
+
+  if (p.web) {
+    const w = p.web;
+    if (p.wallN) {
+      if (p.wallHit > 5 || (Math.hypot(p.vel.x, p.vel.z) < 4 && w.age > 0.3)) {
+        // the go button: slamming into a facade mid-swing runs up it with the speed you had, instead of stopping dead
+        release();
+        if (p.wallCool <= 0) startWallRun(before);
+        else { p.vel.addScaledVector(p.wallN, 6); p.reattach = 0.2; }
+      } else p.vel.addScaledVector(p.wallN, 20 * dt);   // grazing a facade: ease away from it
+    } else if (p.onGround && w.age > 0.15) release();
+    else if (swingDone(p.pos, p.vel, w)) { release(); p.reattach = 0.12; }
+    else if (++w.tick % 4 === 0) {
+      // the rope wrapped round a corner: re-aim rather than draw it through a building
+      handPt.copy(p.pos); handPt.y += 0.6;
+      if (segmentBlocked(handPt, w.anchor, 0.4)) { release(); p.reattach = 0; }
+    }
+  } else if (p.wallRun) {
+    const wr = p.wallRun;
+    if (p.wallN) { wr.n.copy(p.wallN); wr.box = p.wallBox; wr.lost = 0; }
+    else if ((wr.lost += dt) > 0.06) {
+      // contact lost: over the top edge vaults onto the roof, round a corner just carries on
+      if (p.pos.y > wr.box.maxY - 1.5) { p.vel.y = Math.max(p.vel.y, 9); p.vel.addScaledVector(wr.n, -7); }
+      p.wallRun = null; p.wallCool = 0.3;
+    }
+    if (p.wallRun && p.onGround && moveDir.dot(wr.n) > -0.5) p.wallRun = null;
+  } else if (p.wallN && p.wallCool <= 0 && (moveDir.dot(p.wallN) < -0.5 || (!p.onGround && input.swing && p.wallHit > 6))) {
+    // steering into a wall (or hitting one with swing held) runs on it; brushing past keeps your speed
+    startWallRun(before);
+  }
+}
+
+// A token is picked up within TOKEN_R of its beacon's axis, from TOKEN_BELOW under it to TOKEN_ABOVE up the beacon:
+// flying through the foot of the light column takes it, as the beacon promises.
+const TOKEN_R = 3.5, TOKEN_BELOW = 3, TOKEN_ABOVE = 12;
+function collectTokens(a, b) {
+  // swept along this step's motion (at its closest pass to the axis), so fast passes can't skip over a token
+  const sx = b.x - a.x, sz = b.z - a.z, L2 = sx * sx + sz * sz;
+  for (const t of tokens) {
+    if (t.taken) continue;
+    const ox = t.pos.x - a.x, oz = t.pos.z - a.z;
+    const u = L2 > 1e-9 ? clamp((ox * sx + oz * sz) / L2, 0, 1) : 0;
+    const dx = ox - sx * u, dz = oz - sz * u, dy = a.y + (b.y - a.y) * u - t.pos.y;
+    if (dx * dx + dz * dz > TOKEN_R * TOKEN_R || dy < -TOKEN_BELOW || dy > TOKEN_ABOVE) continue;
+    t.taken = true; t.mesh.visible = false; beaconOff(t); tokensTaken++;
+    chime();
+    showToast(tokensTaken === tokens.length ? 'EVERY TOKEN FOUND' : `TOKEN ${tokensTaken} / ${tokens.length}`);
+  }
+}
+
+// ---------------------------------------------------------------- HUD helpers
+let toastTimer = 0;
+function showToast(t) { const el = $('toast'); el.textContent = t; el.style.opacity = 1; toastTimer = 1.1; placeToast(); }
+// On touch the tip panel sits at the top left, where a toast would be drawn under it. While a tip shows, a toast that
+// would overlap it goes above it if it fits between the menu buttons and the readout there (landscape), else below it.
+function placeToast() {
+  const el = $('toast');
+  el.style.top = '';
+  if (!isTouch || !tipOn) return;
+  const r = el.getBoundingClientRect(), tip = $('tip').getBoundingClientRect();
+  if (r.top >= tip.bottom || r.bottom <= tip.top || r.left >= tip.right || r.right <= tip.left) return;
+  const menu = document.querySelector('.tmenu').getBoundingClientRect();
+  const readout = document.querySelector('.readout').getBoundingClientRect();
+  el.style.top = (r.left > menu.right && r.right < readout.left ? tip.top - 6 - r.height : tip.bottom + 8) + 'px';
+}
+const tips = isTouch ? [
+  'Hold <kbd>Swing</kbd> to swing. Keep holding and webs chain automatically.',
+  'Tap <kbd>Jump</kbd> just past the low point of a swing for a swing jump, or slide your thumb from <kbd>Swing</kbd> onto <kbd>Jump</kbd>.',
+  'Drag the right side of the screen to look. Put the centre dot on a ledge and tap <kbd>Zip</kbd> to zip there.',
+  'Nothing to swing from? Tap <kbd>Jump</kbd> in the air to web-zip forward.',
+  'Push the stick into a wall to run up it.',
+  'Follow the gold marker to the nearest token.'
+] : [
+  'Hold <kbd>Left click</kbd> to swing. Keep holding and webs chain automatically.',
+  'Tap <kbd>Space</kbd> just past the low point of a swing for a swing jump. Time it well for a perfect boost.',
+  'Aim at a ledge and press <kbd>E</kbd> or <kbd>Right click</kbd> to zip there. Tap <kbd>Space</kbd> as you arrive to point-launch.',
+  'Nothing to swing from? Tap <kbd>Space</kbd> in the air to web-zip forward.',
+  'Hold <kbd>W</kbd> into a wall to wall-run straight up.',
+  'Hold <kbd>C</kbd> while falling to dive, then swing to turn that speed into momentum.',
+  'Follow the gold marker to the nearest token. <kbd>P</kbd> pauses, <kbd>M</kbd> mutes.'
+];
+// The nearest token still out there: a gold diamond over it with its distance, or, when it's off screen or behind the
+// camera, a diamond on the screen's edge (clear of the readouts and touch controls) with an arrow pointing the way.
+const marker = { el: $('marker'), arrow: document.querySelector('#marker .arrow'), dist: $('marker-dist'), tok: null, pick: 0, on: false, edge: false, metres: -1, x: 0, y: 0, a: 9 };
+const mkv = new V3();
+// The highest and lowest the marker may sit at x, from the screen's centre (y down), with W, H the half-screen: clear
+// of the speed readout (bottom right; top right on touch) and the tip, and on touch of the menu buttons (top left) and
+// the stick and buttons (bottom corners)
+function markerTop(x, W, H) {
+  if (!isTouch) return -(H - 44);
+  return -(H - (tipOn && x < 420 - W ? 180 : Math.abs(x) > W - 250 ? 120 : 40));
+}
+function markerBottom(x, W, H) { return Math.max(markerTop(x, W, H) + 10, H - (Math.abs(x) > W - 250 ? (isTouch ? 240 : 170) : isTouch ? 110 : 120)); }
+function updateMarker(dt) {
+  const m = marker;
+  m.pick -= dt;
+  if (m.pick <= 0 || (m.tok && m.tok.taken)) {
+    m.pick = 0.25; m.tok = null;
+    let best = Infinity;
+    for (const t of tokens) if (!t.taken) { const d = t.pos.distanceToSquared(drawPos); if (d < best) { best = d; m.tok = t; } }
+  }
+  if (!!m.tok !== m.on) { m.on = !!m.tok; m.el.hidden = !m.on; }
+  if (!m.tok) return;
+  const W = innerWidth / 2, H = innerHeight / 2;
+  const bx = W - 34;
+  camera.updateMatrixWorld();   // this frame's view (three only updates it at render)
+  mkv.copy(m.tok.pos).applyMatrix4(camera.matrixWorldInverse);   // camera space, -z ahead
+  let x, y, edge, off;
+  if (mkv.z < -0.5) {
+    mkv.applyMatrix4(camera.projectionMatrix);
+    x = mkv.x * W; y = -mkv.y * H - 26;   // hovering just above the token
+    edge = x < -bx || x > bx || y < markerTop(x, W, H) || y > markerBottom(x, W, H);
+    off = Math.abs(x) > W || Math.abs(y) > H;
+  } else {
+    x = mkv.x; y = -mkv.y; edge = off = true;   // behind: point the way round
+    if (Math.abs(x) + Math.abs(y) < 1e-3) y = 1;
+  }
+  if (edge) {
+    // off screen: out to the screen's edge along its direction first; then into the box. The arrow keeps the true
+    // direction from the centre.
+    const a = Math.atan2(y, x);
+    if (off) { const k = Math.min(W / Math.max(Math.abs(x), 1e-6), H / Math.max(Math.abs(y), 1e-6)); x *= k; y *= k; }
+    x = clamp(x, -bx, bx); y = clamp(y, markerTop(x, W, H), markerBottom(x, W, H));
+    if (Math.abs(a - m.a) > 0.01) { m.a = a; m.arrow.style.transform = `rotate(${a.toFixed(3)}rad)`; }
+  }
+  if (edge !== m.edge) { m.edge = edge; m.el.classList.toggle('edge', edge); }
+  if (Math.abs(x - m.x) > 0.5 || Math.abs(y - m.y) > 0.5) {
+    m.x = x; m.y = y;
+    m.el.style.transform = `translate(${(W + x).toFixed(1)}px, ${(H + y).toFixed(1)}px)`;
+  }
+  const dist = Math.round(m.tok.pos.distanceTo(drawPos));
+  if (dist !== m.metres) { m.metres = dist; m.dist.textContent = dist + ' m'; }
+}
+let tipIdx = 0, tipTimer = 0, tipOn = false;
+function nextTip() {
+  $('tip').innerHTML = tips[tipIdx]; $('tip').style.opacity = 1; tipIdx++; tipTimer = 7; tipOn = true;
+  if (toastTimer > 0) placeToast();   // (the new tip can be taller)
+}
+
+// ---------------------------------------------------------------- states
+let state = 'title', resumeTimer = 0;
+function show(id) { ['title-screen', 'pause-screen'].forEach(s => { $(s).hidden = s !== id; }); }
+// lockMouse: false when a gamepad starts or resumes (no click to capture the mouse with)
+function start(lockMouse = true) {
+  if (state === 'play') return;
+  audio();
+  state = 'play';
+  camera.clearViewOffset();   // (the title screen's framing)
+  show(null);
+  $('hud').hidden = false;
+  $('touch').hidden = !isTouch;
+  if (lockMouse) lockPointer();
+  if (tipIdx === 0 && tips.length) nextTip();
+}
+function pause() {
+  if (state !== 'play') return;
+  state = 'paused';
+  mouseSwing = false; keys.clear();
+  $('pause-stats').textContent = `${tokensTaken} of ${tokens.length} tokens collected · top speed ${Math.round(topSpeed * 3.6)} km/h`;
+  show('pause-screen');
+  // free the cursor for the menu (a P or gamepad pause would otherwise keep it locked and Resume unclickable)
+  if (document.pointerLockElement) { lock.pageExit = true; document.exitPointerLock(); }
+  if (!isTouch) $('resume-btn').focus({ preventScroll: true });
+}
+function resume(withMouse = true) {
+  if (state !== 'paused' || resumeTimer) return;
+  // Chrome won't lock the mouse again until about 1.25 s after Esc released it: wait that out on the pause screen
+  const wait = withMouse && !lock.unavailable ? 1300 - (performance.now() - lock.lostAt) : 0;
+  if (wait > 0) {
+    const b = $('resume-btn');
+    b.disabled = true; b.textContent = 'Resuming…';
+    resumeTimer = setTimeout(() => {
+      resumeTimer = 0; b.disabled = false; b.textContent = 'Resume';
+      if (state === 'paused' && !document.hidden) start();
+    }, wait);
+    return;
+  }
+  start(withMouse);
+}
+function cancelResume() {
+  if (!resumeTimer) return;
+  clearTimeout(resumeTimer); resumeTimer = 0;
+  const b = $('resume-btn'); b.disabled = false; b.textContent = 'Resume';
+}
+function toggleMute() {
+  muted = !muted;
+  $('mute-btn').textContent = muted ? 'Sound off' : 'Sound on';
+  $('t-mute').setAttribute('aria-pressed', muted);
+  if (state === 'play') showToast(muted ? 'SOUND OFF' : 'SOUND ON');
+}
+$('start-btn').addEventListener('click', () => start());
+// The pause panel's buttons get tapped with the other thumb still on the stick or Swing too, so like the on-screen
+// Pause button a touch acts on pointerup. A mouse click or the keyboard comes through 'click' (a desktop Resume must
+// run inside that click for the pointer lock), which skips the click a lone touch makes after its pointerup.
+for (const [id, fn] of [['resume-btn', () => resume()], ['mute-btn', toggleMute]]) {
+  const el = $(id);
+  let downId = null, tapAt = -1e9;
+  el.addEventListener('pointerdown', e => {
+    downId = e.pointerType === 'mouse' ? null : e.pointerId;
+    if (downId !== null) e.preventDefault();   // (no compatibility mousedown on the game once Resume has hidden the panel)
+  });
+  el.addEventListener('pointerup', e => { if (e.pointerId === downId) { downId = null; tapAt = performance.now(); fn(); } });
+  el.addEventListener('pointercancel', () => { downId = null; });
+  el.addEventListener('click', () => { if (performance.now() - tapAt > 800) fn(); });
+}
+
+// ---------------------------------------------------------------- animation
+// The body turns toward a target orientation at a capped rate (smoothly, never snapping round), and every joint eases
+// toward a pose built from the movement: the phase of the swing arc, vertical speed in the air, speed on the ground
+// and on walls. Pose channels: per limb (armL, armR, legL, legR) the shoulder or hip swing (x, negative = forward),
+// spread (z, positive = toward +x) and elbow or knee bend; then spine bend / twist / lean and head nod.
+const LIMBS = [joints.armL, joints.armR, joints.legL, joints.legR];
+const SPINE = 12, HEAD = 15, NCH = 16;
+const pose = new Float32Array(NCH), goal = new Float32Array(NCH), chRate = new Float32Array(NCH);
+const MAX_TURN = 10;   // rad/s: the fastest the body itself turns
+const heroBase = new THREE.Quaternion(), heroInv = new THREE.Quaternion(), trickQ = new THREE.Quaternion(), tq = new THREE.Quaternion();
+const tm = new THREE.Matrix4(), aUp = new V3(), aFwd = new V3(), bx = new V3(), bz = new V3(), av = new V3(), aw = new V3();
+const palmL = new V3(), palmR = new V3(), soleA = new V3(), soleB = new V3(), relAnchor = new V3(), TRICK_AXES = [new V3(1, 0, 0), new V3(0, 1, 0)];
+const anim = { dive: false, cling: 0, land: 0, airVy: 0, grounded: false, spins: 0, webAt: -9, webHand: 1, trick: -1, trickT: 0, trickAt: -9, plant: 0, relT: 9 };
+
+function limbGoal(i, x, z, bend) { goal[i * 3] = x; goal[i * 3 + 1] = z; goal[i * 3 + 2] = bend; }
+// blend the goal toward another pose (written by fn) by k
+const goalB = new Float32Array(NCH);
+function blendGoal(fn, k) {
+  if (k <= 0.001) return;
+  goalB.set(goal); fn();
+  for (let i = 0; i < NCH; i++) goal[i] = lerp(goalB[i], goal[i], k);
+}
+// point limb i (an arm) at world point pt, from the hero's current orientation
+function aimArm(i, pt, rate) {
+  av.set(i === 0 ? SHOULDER_X : -SHOULDER_X, SHOULDER_Y, 0).applyQuaternion(heroBase).add(drawPos);
+  av.subVectors(pt, av).applyQuaternion(heroInv);
+  const l = av.length();
+  if (l < 1e-3) return;
+  av.multiplyScalar(1 / l);
+  limbGoal(i, Math.atan2(-av.z, -av.y) - goal[SPINE], Math.asin(clamp(av.x, -1, 1)), -0.12);
+  chRate[i * 3] = chRate[i * 3 + 1] = rate;
+}
+function poseIdle() {
+  const b = Math.sin(clock * 2) * 0.03;
+  limbGoal(0, 0.06, 0.17 + b, -0.3); limbGoal(1, 0.06, -0.17 - b, -0.3);
+  limbGoal(2, -0.06, 0.06, 0.12); limbGoal(3, 0.05, -0.06, 0.1);
+  goal[SPINE] = 0.04 + b; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = -0.03;
+}
+function poseRun(ph, amp) {
+  const s = Math.sin(ph), c = Math.cos(ph);
+  limbGoal(2, s * amp, 0.04, Math.max(0, -c) * 1.4 * amp + 0.18);
+  limbGoal(3, -s * amp, -0.04, Math.max(0, c) * 1.4 * amp + 0.18);
+  limbGoal(0, -s * amp * 0.9, 0.14, -1.25); limbGoal(1, s * amp * 0.9, -0.14, -1.25);
+  goal[SPINE] = 0.12 * amp; goal[SPINE + 1] = s * 0.2 * amp; goal[SPINE + 2] = 0; goal[HEAD] = -0.1 * amp;
+}
+// ph: 0 dropping in, 0.5 the bottom of the arc, 1 the upswing. The web hand is aimed separately.
+function poseSwing(ph, hand) {
+  const free = 1 - hand, side = free === 0 ? 1 : -1;
+  const d = smoothstep(clamp(ph * 2.2, 0, 1)), u = smoothstep(clamp((ph - 0.5) * 2.5, 0, 1));
+  // free arm: reaching ahead on the drop, swept back through the bottom, up for the next web on the rise
+  limbGoal(free, lerp(lerp(-1.3, 0.75, d), -2.5, u), side * lerp(0.55, 0.3, u), lerp(-1.0, -0.35, d));
+  // legs (lead leg on the free side): trail behind on the drop, tuck through the bottom, kick ahead on the rise
+  const lead = free === 0 ? 2 : 3, back = 5 - lead, ls = lead === 2 ? 1 : -1;
+  limbGoal(lead, lerp(lerp(0.35, -1.45, d), -1.05, u), ls * 0.12, lerp(lerp(0.55, 2.1, d), 0.3, u));
+  limbGoal(back, lerp(lerp(0.6, -0.85, d), -0.35, u), -ls * 0.1, lerp(lerp(0.9, 1.7, d), 0.75, u));
+  goal[SPINE] = lerp(lerp(-0.18, 0.32, d), -0.05, u); goal[SPINE + 1] = 0; goal[SPINE + 2] = -side * 0.12; goal[HEAD] = lerp(0.1, -0.15, u);
+}
+// r: 1 rising, 0 falling. Rising tucks; falling reaches up and out (never arms straight out sideways)
+function poseAir(r) {
+  limbGoal(0, lerp(2.5, -0.9, r), lerp(0.55, 0.35, r), lerp(-0.35, -1.4, r));
+  limbGoal(1, lerp(2.2, -0.45, r), lerp(-0.7, -0.4, r), lerp(-0.55, -1.2, r));
+  limbGoal(2, lerp(-0.25, -1.3, r), 0.14, lerp(0.35, 1.9, r));
+  limbGoal(3, lerp(0.25, -0.5, r), -0.12, lerp(0.65, 1.25, r));
+  goal[SPINE] = lerp(-0.1, 0.22, r); goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = 0;
+}
+function poseTuck() {   // knees to the chest, for flips
+  limbGoal(0, -0.7, 0.3, -1.9); limbGoal(1, -0.7, -0.3, -1.9);
+  limbGoal(2, -2.1, 0.12, 2.4); limbGoal(3, -2.0, -0.12, 2.4);
+  goal[SPINE] = 0.45; goal[HEAD] = 0.3;
+}
+function poseDive() {   // head first, arms swept back along the body, legs together
+  limbGoal(0, 0.45, 0.2, -0.12); limbGoal(1, 0.45, -0.2, -0.12);
+  limbGoal(2, 0.08, 0.05, 0.22); limbGoal(3, 0.16, -0.05, 0.38);
+  goal[SPINE] = -0.12; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = -0.55;
+}
+function poseZip() {
+  limbGoal(2, 0.35, 0.1, 0.9); limbGoal(3, 0.6, -0.1, 1.1);
+  goal[SPINE] = -0.1; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = 0;
+}
+function poseCling() {  // flat on the wall (he faces it): hands up and out on it, knees bent out to the sides
+  limbGoal(0, -2.75, 0.75, -0.9); limbGoal(1, -2.5, -0.85, -1.0);
+  limbGoal(2, -1.1, 0.8, 1.7); limbGoal(3, -0.8, -0.75, 1.5);
+  goal[SPINE] = 0.05; goal[SPINE + 1] = goal[SPINE + 2] = 0; goal[HEAD] = -0.35;
+}
+function poseLand() {   // superhero landing: deep crouch, one hand down
+  limbGoal(0, -0.35, 0.25, -0.15); limbGoal(1, 0.8, -0.55, -0.4);
+  limbGoal(2, -1.45, 0.22, 2.3); limbGoal(3, -0.35, -0.12, 2.1);
+  goal[SPINE] = 0.55; goal[SPINE + 1] = 0.15; goal[SPINE + 2] = 0; goal[HEAD] = -0.4;
+}
+// swing phase from the rope's angle past the bottom of the arc along the direction of travel
+function swingPhase(w) {
+  const h = Math.hypot(p.vel.x, p.vel.z);
+  const dx = h > 2 ? p.vel.x / h : p.travel.x, dz = h > 2 ? p.vel.z / h : p.travel.z;
+  const ahead = (drawPos.x - w.pivot.x) * dx + (drawPos.z - w.pivot.z) * dz;
+  return clamp(0.5 + Math.atan2(ahead, Math.max(0.5, w.pivot.y - drawPos.y)) / 1.7, 0, 1);
+}
+// seconds until the current velocity runs into a building or the street
+function impactTime() {
+  const s = p.vel.length();
+  if (s < 1) return Infinity;
+  aw.copy(p.vel).multiplyScalar(1 / s);
+  const hit = raycast(p.pos, aw, 400);
+  const t = hit ? hit.t / s : Infinity;
+  return p.vel.y < 0 ? Math.min(t, (p.pos.y - R) / -p.vel.y) : t;
+}
+// orientation with +y along `up` (unit) and +z (the chest) as near `fwd` as possible. A little of the current facing
+// is mixed in, so a forward that runs nearly along `up` can't spin the body round its long axis.
+function basisQuat(up, fwd, out) {
+  av.copy(fwd);
+  const l = av.length();
+  if (l > 1e-6) av.multiplyScalar(1 / l);
+  bz.set(0, 0, 1).applyQuaternion(heroBase);
+  bz.multiplyScalar(0.08).add(av).addScaledVector(up, -bz.dot(up));
+  if (bz.lengthSq() < 1e-6) bz.set(0, 1, 0).applyQuaternion(heroBase).addScaledVector(up, -bz.dot(up));
+  bz.normalize();
+  bx.crossVectors(up, bz);
+  tm.makeBasis(bx, up, bz);
+  return out.setFromRotationMatrix(tm);
+}
+function animateHero(dt) {
+  const hs = Math.hypot(p.vel.x, p.vel.z), speed = p.vel.length();
+  if (hs > 1) {
+    const k = 1 - Math.exp(-dt * 10), hx = p.heading.x + (p.vel.x / hs - p.heading.x) * k, hz = p.heading.z + (p.vel.z / hs - p.heading.z) * k, hl = Math.hypot(hx, hz);
+    if (hl > 1e-3) p.heading.set(hx / hl, 0, hz / hl);
+  }
+  heroInv.copy(heroBase).invert();
+  chRate.fill(8);
+  aUp.copy(UP); aFwd.copy(p.heading);
+  const air = !p.web && !p.zip && !p.wallRun && !p.onGround;
+  // the dive pose only while actually diving, and only with time to hold it: it starts with over 0.7 s of fall left
+  // and ends 0.4 s out, so the hero lands on his feet
+  anim.dive = air && input.dive && p.vel.y < -6 && impactTime() > (anim.dive ? 0.4 : 0.7);
+  anim.cling += ((p.wallRun && speed < 1.5 ? 1 : 0) - anim.cling) * (1 - Math.exp(-dt * 8));
+  if (!p.onGround) anim.airVy = p.vel.y;
+  else if (anim.airVy < -18) { anim.land = clamp(-anim.airVy / 45, 0.45, 1); anim.airVy = 0; }
+  anim.land = Math.max(0, anim.land - dt * (hs > 6 || !p.onGround ? 6 : 2.2));
+  p.zipFx = Math.max(0, p.zipFx - dt);
+
+  if (p.web) {
+    const w = p.web;
+    if (p.webAt !== anim.webAt) {   // a new web: the hand on the anchor's side throws it
+      anim.webAt = p.webAt;
+      av.subVectors(w.anchor, drawPos).applyQuaternion(heroInv);
+      anim.webHand = av.x >= 0 ? 0 : 1;
+    }
+    // hang mostly along the strand (it's what the eye sees) and partly toward the fulcrum that really swings him, facing
+    // along the travel line (each new web resets it): a backswing swings backwards instead of turning round
+    aUp.subVectors(w.pivot, drawPos).normalize().multiplyScalar(0.35);
+    aUp.addScaledVector(aw.subVectors(w.anchor, drawPos).normalize(), 0.65).addScaledVector(UP, 0.1).normalize();
+    const along = p.vel.x * p.travel.x + p.vel.z * p.travel.z;
+    aFwd.copy(p.vel);
+    if (along < 0) aFwd.addScaledVector(p.travel, -2 * along);   // mirror the backward part forward
+    aFwd.addScaledVector(p.travel, 4).addScaledVector(aw.set(0, 0, 1).applyQuaternion(heroBase), 2);
+    poseSwing(swingPhase(w), anim.webHand);
+    aimArm(anim.webHand, w.anchor, 20);
+  } else if (p.zip) {
+    aFwd.subVectors(p.zip.target, drawPos);
+    aUp.copy(aFwd).normalize().lerp(UP, 0.4).normalize();
+    poseZip();
+    aimArm(0, p.zip.target, 20); aimArm(1, p.zip.target, 20);
+  } else if (p.wallRun) {
+    const n = p.wallRun.n;
+    if (anim.cling > 0.5) { aFwd.copy(n).negate(); poseCling(); }
+    else {
+      // feet on the wall, chest toward where he runs
+      aUp.copy(n);
+      aFwd.copy(p.vel).addScaledVector(n, -p.vel.dot(n));
+      if (aFwd.lengthSq() < 1) aFwd.copy(UP);
+      p.runPhase += dt * (4 + speed * 0.6);
+      poseRun(p.runPhase, clamp(speed / 14, 0.5, 1.1));
+      chRate.fill(24, 0, 12);
+    }
+  } else if (p.onGround) {
+    if (hs > 0.8) {
+      p.runPhase += dt * (4 + hs * 0.55);
+      poseRun(p.runPhase, clamp(hs / 14, 0.4, 1.1));
+      chRate.fill(24, 0, 12);
+      aUp.addScaledVector(p.heading, Math.min(hs, 26) * 0.012).normalize();
+    } else poseIdle();
+  } else if (anim.dive) {
+    aUp.copy(p.vel).normalize();
+    // chest toward the ground and back along the fall: never parallel to the fall line, so no corkscrew
+    if (hs > 1) aw.set(p.vel.x / hs, 0, p.vel.z / hs); else aw.copy(p.heading);
+    aFwd.copy(UP).negate().sub(aw);
+    poseDive();
+  } else {
+    if (speed > 0.5) aUp.addScaledVector(p.vel, 0.3 / speed).normalize();
+    poseAir(clamp(p.vel.y / 18, -1, 1) * 0.5 + 0.5);
+  }
+  if (p.zipFx > 0 && !p.zip) { aimArm(0, p.zipFxPoint, 30); aimArm(1, p.zipFxPoint, 30); }
+  if (p.onGround && anim.land > 0) { blendGoal(poseLand, smoothstep(Math.min(1, anim.land * 1.6))); chRate.fill(18); }
+
+  // tricks: a perfect swing jump or launch flips forward, a plain swing jump may spin; anything but free air ends them
+  if (p.trickAt !== anim.trickAt) {
+    anim.trickAt = p.trickAt;
+    // a plain swing jump spins every other time, so it doesn't get repetitive
+    if (air && p.vel.y > 6 && (p.trickPerfect || anim.spins++ % 2 === 0)) { anim.trick = p.trickPerfect ? 0 : 1; anim.trickT = 0; }
+  }
+  if (anim.trick >= 0) {
+    const dur = anim.trick === 0 ? 0.62 : 0.5;
+    anim.trickT += dt;
+    const t = Math.min(1, anim.trickT / dur);
+    trickQ.setFromAxisAngle(TRICK_AXES[anim.trick], Math.PI * 2 * smoothstep(t));
+    if (anim.trick === 0) blendGoal(poseTuck, Math.sin(Math.PI * t));
+    if (t >= 1 || !air) { heroBase.multiply(trickQ); anim.trick = -1; }   // fold what's left into the body's turn
+  }
+
+  basisQuat(aUp, aFwd, tq);
+  const ang = heroBase.angleTo(tq);
+  if (ang > 1e-5) heroBase.rotateTowards(tq, Math.min(ang * (1 - Math.exp(-dt * 10)), MAX_TURN * dt));
+  hero.quaternion.copy(heroBase);
+  if (anim.trick >= 0) hero.quaternion.multiply(trickQ);
+
+  for (let i = 0; i < NCH; i++) {
+    const g = i === 0 || i === 3 ? pose[i] + angleDiff(pose[i], goal[i]) : goal[i];   // arms turn the short way round
+    pose[i] += (g - pose[i]) * (1 - Math.exp(-dt * chRate[i]));
+  }
+  for (let i = 0; i < 4; i++) {
+    const L = LIMBS[i];
+    L.j1.rotation.x = pose[i * 3]; L.j1.rotation.z = pose[i * 3 + 1]; L.j2.rotation.x = pose[i * 3 + 2];
+  }
+  joints.spine.rotation.set(pose[SPINE], pose[SPINE + 1], pose[SPINE + 2]);
+  joints.head.rotation.x = pose[HEAD];
+
+  hero.position.copy(drawPos);
+  if (p.wallRun && anim.cling > 0.01) hero.position.addScaledVector(p.wallRun.n, -0.72 * anim.cling);   // pressed to the wall
+  hero.updateMatrixWorld(true);
+  // on the ground, the lower foot is planted: bent knees lower the body instead of lifting both feet off the floor
+  let plant = 0;
+  if (p.onGround && !p.wallRun) {
+    joints.legL.end.getWorldPosition(soleA); joints.legR.end.getWorldPosition(soleB);
+    plant = clamp(Math.min(soleA.y, soleB.y) - (drawPos.y - R), -0.1, 0.7);
+  }
+  // follow the stride exactly while grounded; ease in and out on landing and take-off
+  anim.plant = p.onGround && anim.grounded ? plant : anim.plant + (plant - anim.plant) * (1 - Math.exp(-dt * 25));
+  anim.grounded = p.onGround && !p.wallRun;
+  if (Math.abs(anim.plant) > 0.002) { hero.position.y -= anim.plant; hero.updateMatrixWorld(true); }
+
+  // webs leave from the palm; a released web whips back to its anchor
+  if (p.web) {
+    (anim.webHand === 0 ? joints.armL : joints.armR).end.getWorldPosition(palmL);
+    placeWeb(webs[0], palmL, p.web.anchor); webs[1].visible = false;
+    relAnchor.copy(p.web.anchor); anim.relT = 0;
+  } else {
+    joints.armL.end.getWorldPosition(palmL); joints.armR.end.getWorldPosition(palmR);
+    anim.relT += dt;
+    if (p.zip) { placeWeb(webs[0], palmR, p.zip.target); placeWeb(webs[1], palmL, p.zip.target); }
+    else if (p.zipFx > 0) { placeWeb(webs[0], palmR, p.zipFxPoint); placeWeb(webs[1], palmL, p.zipFxPoint); }
+    else if (anim.relT < 0.14) {
+      aw.copy(anim.webHand === 0 ? palmL : palmR).lerp(relAnchor, anim.relT / 0.14);
+      placeWeb(webs[0], aw, relAnchor); webs[1].visible = false;
+    } else webs[0].visible = webs[1].visible = false;
+  }
+}
+
+// ---------------------------------------------------------------- camera
+const DEG = Math.PI / 180;
+const smoothstep = t => t * t * (3 - 2 * t);
+// Vertical FOV for this window shape. fov16 is the angle a 16:9 window would get at this moment (rest..rest+speed
+// widening); the rest view keeps its horizontal angle between 52 and 105 degrees, so a portrait phone isn't a slit
+// and an ultra-wide window isn't a fisheye. Speed and the web kick zoom out from there (tangent scale), capped at
+// 96 degrees vertical (only a portrait screen gets there: the hero stays a readable size) and 122 horizontal.
+function viewFov(fov16, kick, aspect, rest = 66) {
+  const tr = Math.tan(rest * DEG / 2);
+  const h = clamp(2 * Math.atan(tr * aspect), 52 * DEG, 105 * DEG);
+  const t = Math.tan(h / 2) / aspect * Math.tan(fov16 * DEG / 2) / tr * kick;
+  return Math.min(2 * Math.atan(t), 96 * DEG, 2 * Math.atan(Math.tan(61 * DEG) / aspect)) / DEG;
+}
+
+// Camera collision: how far a sphere of radius `pad` can travel from o along dir (normalized) before it touches a
+// building, its cornice ledge or the street, up to maxT. Each box is grown by pad with its edges cut at 45 degrees,
+// which holds the sphere's true rounded reach closely (a plainly grown box sticks out 40% further at the corners and
+// stops the camera short at every building corner). A shape the sphere already overlaps at o is skipped.
+const camNear = [];
+function camGather(o, r) {
+  camNear.length = 0;
+  for (const b of query(o.x, o.z, r)) camNear.push(b);   // query's array is shared, keep a copy
+}
+let sIn = 0, sOut = 0;
+function slab(o, d, lo, hi) {
+  if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) sOut = -1; return; }
+  let t1 = (lo - o) / d, t2 = (hi - o) / d;
+  if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+  if (t1 > sIn) sIn = t1;
+  if (t2 < sOut) sOut = t2;
+}
+function grownBoxT(o, d, best, x0, x1, y0, y1, z0, z1, r) {
+  const c = r * Math.SQRT2;
+  sIn = -Infinity; sOut = best;
+  slab(o.x, d.x, x0 - r, x1 + r); slab(o.y, d.y, y0 - r, y1 + r); slab(o.z, d.z, z0 - r, z1 + r);
+  slab(o.x + o.z, d.x + d.z, x0 + z0 - c, x1 + z1 + c); slab(o.x - o.z, d.x - d.z, x0 - z1 - c, x1 - z0 + c);
+  slab(o.y + o.x, d.y + d.x, y0 + x0 - c, y1 + x1 + c); slab(o.y - o.x, d.y - d.x, y0 - x1 - c, y1 - x0 + c);
+  slab(o.y + o.z, d.y + d.z, y0 + z0 - c, y1 + z1 + c); slab(o.y - o.z, d.y - d.z, y0 - z1 - c, y1 - z0 + c);
+  return sIn > sOut || sIn < 0 ? best : sIn;
+}
+// keep a point at least `need` from every building and ledge (and above the street): the camera line starts here
+function camPushOut(pt, need) {
+  pt.y = Math.max(pt.y, need);
+  for (const b of camNear) for (let k = 0; k < (b.prop ? 1 : 2); k++) {
+    const m = k ? 0.6 : 0, y0 = k ? b.maxY - 1.05 : b.minY;
+    const dx = pt.x - clamp(pt.x, b.minX - m, b.maxX + m), dy = pt.y - clamp(pt.y, y0, b.maxY), dz = pt.z - clamp(pt.z, b.minZ - m, b.maxZ + m);
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > 1e-4 && d < need) { const k2 = (need - d) / d; pt.x += dx * k2; pt.y += dy * k2; pt.z += dz * k2; }
+  }
+}
+function camCast(o, d, maxT, pad) {
+  let best = maxT;
+  if (d.y < -1e-6) best = Math.min(best, Math.max(0, (o.y - pad) / -d.y));
+  for (const b of camNear) {
+    best = grownBoxT(o, d, best, b.minX, b.maxX, b.minY, b.maxY, b.minZ, b.maxZ, pad);
+    // the cornice overhangs the wall by 0.6 m along the top 1.05 m
+    if (!b.prop) best = grownBoxT(o, d, best, b.minX - 0.6, b.maxX + 0.6, b.maxY - 1.05, b.maxY, b.minZ - 0.6, b.maxZ + 0.6, pad);
+  }
+  return best;
+}
+
+// Free distance for the camera behind o. The swept sphere starts thin and only reaches the near-plane radius 1.5 m
+// out: a camera line leaving the hero alongside a wall (rounding a corner, running on a wall) slides past instead of
+// being stopped dead against the hero's back.
+const castFrom = new V3();
+function camFree(o, back, maxT, pad) {
+  const thin = camCast(o, back, maxT, 0.3);
+  if (thin <= 1.5) return thin;
+  castFrom.copy(o).addScaledVector(back, 1.5);
+  return Math.min(thin, 1.5 + camCast(castFrom, back, maxT - 1.5, pad));
+}
+
+// Auto camera, run from the physics loop at the fixed rate (the view's yaw steers movement, so this keeps movement
+// independent of the frame rate). Yaw follows the swing's travel line, or the velocity in the air; while a direction
+// is held, motion well off the view's forward is the player strafing or backing up, so it isn't chased (that would
+// spin camera-relative input in circles). Pitch dips and lifts gently with the swing arc, tilts down a fast fall and
+// looks up a wall run. All of it fades out while the player steers the camera and back in 0.6-1.8 s after.
+const BASE_PITCH = -0.12;
+let wallCamT = 0, againstT = 0, camTurn = 1;
+function followWeight() {
+  const idle = clock - lastLook;
+  return idle < 0.6 ? 0 : idle > 1.8 ? 1 : smoothstep((idle - 0.6) / 1.2);
+}
+function camFollow(dt) {
+  wallCamT = Math.max(0, wallCamT - dt);
+  const w = followWeight();
+  const hs = Math.hypot(p.vel.x, p.vel.z), steering = moveDir.lengthSq() > 0.01;
+  againstT = hs > 8 && p.vel.x * p.travel.x + p.vel.z * p.travel.z < -0.5 * hs ? againstT + dt : 0;
+  let yawT = NaN, yawK = 0, reach = 0, pitchT = NaN, pitchK = 0;
+  if (p.wallRun) {
+    // turn to within 25 degrees of square to the wall (unless A/D is held: turning would change what it does) and
+    // look up it while climbing, steeply enough (up to 1.1 rad) that the top of a tall tower and the zip ring on it
+    // are in view instead of a screen of windows
+    const n = p.wallRun.n, face = Math.atan2(-n.x, -n.z), off = angleDiff(face, cam.yaw);
+    if (Math.abs(off) > 0.44 && (!steering || Math.abs(moveDir.x * camR.x + moveDir.z * camR.z) < 0.4)) { yawT = face + Math.sign(off) * 0.44; yawK = 2.5; }
+    // nearing the top, level off in time to look over the roof edge (the camera can't stay below a ledge)
+    const top = clamp((p.wallRun.box.maxY - p.pos.y) / (2 + 0.6 * Math.max(0, p.vel.y)), 0, 1);
+    pitchT = lerp(BASE_PITCH, 0.15 + 0.95 * clamp(p.vel.y / 15, 0, 1), top); pitchK = top < 1 ? 4 : 2.5;
+    wallCamT = 1.2;
+  } else if (p.web) {
+    // the travel line, unless the hero has been moving against it for a while (thrown back off a wall or the city edge)
+    if (againstT > 0.6) { yawT = Math.atan2(p.vel.x, p.vel.z); yawK = 1.4; }
+    else { yawT = Math.atan2(p.travel.x, p.travel.z); yawK = 1.8; reach = 0.25; }   // held A/D still turns the swing, gently
+    pitchT = BASE_PITCH + 0.2 * Math.atan2(p.vel.y, Math.max(hs, 12)); pitchK = 1.5;
+  } else if (!p.onGround) {
+    if (hs > 6) { yawT = Math.atan2(p.vel.x, p.vel.z); yawK = 1.4; }
+    const fall = clamp(-(p.vel.y + 20) / 60, 0, 1);   // falling faster than 20 m/s tilts the view down at the street
+    pitchT = BASE_PITCH - 0.5 * fall; pitchK = wallCamT > 0 ? 4 : 1 + fall;
+  } else if (wallCamT > 0) { pitchT = BASE_PITCH; pitchK = 4; }   // just topped out a wall run: level off
+  else if (hs > 3) { pitchT = BASE_PITCH; pitchK = 1.5; }   // running: undo the tilt a dive or fall left (standing still keeps a zip aim)
+  // at the city edge there's nowhere to go: a view with any part facing out turns back in (mirrored off the edge); in a
+  // corner, a view more than 50 degrees off the city centre turns to face it
+  const ex = Math.abs(p.pos.x) > HALF - 30, ez = Math.abs(p.pos.z) > HALF - 30;
+  const ox = ex && camF.x * p.pos.x > 0.02, oz = ez && camF.z * p.pos.z > 0.02;
+  const corner = ex && ez, edgeTurn = !p.wallRun && (corner ? -(camF.x * p.pos.x + camF.z * p.pos.z) < 0.64 * Math.hypot(p.pos.x, p.pos.z) : ox || oz);
+  if (edgeTurn) { yawT = corner ? Math.atan2(-p.pos.x, -p.pos.z) : Math.atan2(ox ? -camF.x : camF.x, oz ? -camF.z : camF.z); yawK = 2.5; }
+  if (w <= 0) return;
+  if (yawT === yawT) {
+    let d = angleDiff(cam.yaw, yawT);
+    // a target straight behind could be turned to either way (and rounding would flip the way every step): keep the way
+    // the last turn went, or at the city edge sweep the view inward
+    if (Math.abs(d) > Math.PI - 0.1) d = Math.abs(d) * (edgeTurn ? (camF.x * p.pos.z - camF.z * p.pos.x < 0 ? -1 : 1) : camTurn);
+    else camTurn = d < 0 ? -1 : 1;
+    const fwd = edgeTurn || p.wallRun ? 1 : steering ? clamp(Math.cos(d) + reach, 0, 1) : 1;
+    cam.yaw += clamp(d * (1 - Math.exp(-dt * yawK * w * fwd)), -2 * dt, 2 * dt);
+  }
+  // (at most 2 rad/s, as for yaw: a wall run's steep look up, and the drop back level when it ends, would otherwise
+  // swing the camera round the hero at over 30 m/s)
+  if (pitchT === pitchT) cam.pitch += clamp((pitchT - cam.pitch) * (1 - Math.exp(-dt * pitchK * w)), -2 * dt, 2 * dt);
+}
+// how far up the view may look: 0.75 rad, or 1.15 on a wall run (camFollow looks up a climb); afterwards the limit
+// comes back down at 1 rad/s instead of snapping the view down
+let lookCap = 0.75;
+function applyLook(dt) {
+  const sens = 0.0022;
+  if (input.lookX || input.lookY) lastLook = clock;
+  cam.yaw -= input.lookX * sens;
+  lookCap = p.wallRun ? 1.15 : Math.max(0.75, lookCap - dt);
+  cam.pitch = clamp(cam.pitch - input.lookY * sens, -1.15, lookCap);
+}
+
+// title: a slow orbit round the landmark, 430 m out and 230 m up, raised to stay 30 m over any tower near its path
+// (each raise is ramped over the samples either side, so the camera eases over instead of jumping)
+const TITLE_C = new V3(-HALF + 5 * P + 45, 0, -HALF + 5 * P + 45), TITLE_N = 256, titleY = new Float32Array(TITLE_N);
+const titleSun = new V3(TITLE_C.x, 100, TITLE_C.z);
+{
+  const raw = new Float32Array(TITLE_N);
+  for (let i = 0; i < TITLE_N; i++) {
+    const a = i / TITLE_N * Math.PI * 2;
+    raw[i] = 230;
+    for (const b of query(TITLE_C.x + Math.sin(a) * 430, TITLE_C.z + Math.cos(a) * 430, 45)) raw[i] = Math.max(raw[i], b.maxY + 30);
+  }
+  for (let i = 0; i < TITLE_N; i++) for (let j = -12; j <= 12; j++)
+    titleY[i] = Math.max(titleY[i], raw[(i + j + TITLE_N) % TITLE_N] - Math.abs(j) * 5);
+}
+function titleCamera() {
+  const a = clock * 0.05 + 2.2, u = ((a / (Math.PI * 2)) % 1 + 1) % 1 * TITLE_N, i = Math.floor(u) % TITLE_N;
+  const y = lerp(titleY[i], titleY[(i + 1) % TITLE_N], u - Math.floor(u));
+  camera.position.set(TITLE_C.x + Math.sin(a) * 430, y, TITLE_C.z + Math.cos(a) * 430);
+  camera.lookAt(TITLE_C.x, 120, TITLE_C.z);
+  camera.fov = viewFov(60, 1, camera.aspect, 60);
+  // a landscape screen shows the landmark in its right third, clear of the menu panel in the middle
+  if (innerHeight > 0 && innerWidth > 1.3 * innerHeight) camera.setViewOffset(innerWidth, innerHeight, -0.28 * innerWidth, 0, innerWidth, innerHeight);
+  else camera.clearViewOffset();
+  sky.position.copy(camera.position);
+  placeSun(titleSun, 600);
+}
+
+// Chase camera. The hero's chest is framed a little right of and below the centre (lower-middle third, the crosshair
+// stays clear; left of it on a portrait screen), at that same screen spot whatever the distance or FOV. The framed
+// point trails the hero a little at speed, so the hero moves in the frame along the swing arc and pulls ahead when
+// accelerating. Distance grows with speed; each new web kicks the FOV out with a matching dolly in. Collision casts a
+// sphere the size of the near plane back from the hero: it pulls in at once when something comes between, eases in
+// early when the hero's path is about to bring something between, and springs back out slowly.
+// the hero's spot on screen (NDC). A portrait screen raises it to clear the touch buttons in the bottom corner, and
+// moves it left of the centre: there 0.1 is only ~20 px, and the crosshair would sit on his chest or web arm.
+const CAM_NDC_X = 0.1, CAM_NDC_Y = -0.3, PORTRAIT_NDC_X = -0.22;
+const SHADOW_HALF = [160, 240, 340], SHADOW_UP = [75, 145], sunCenter = new V3();
+let shadowLv = 0;
+let camNdcX = CAM_NDC_X, camNdcY = CAM_NDC_Y;
+const viewDir = new V3(), camUp = new V3(), camBack = new V3(), altBack = new V3(), camOff = new V3(), camLag = new V3(), camFrame = new V3(), camAhead = new V3(), camGo = new V3();
+let camTilt = 0, uCap = 0.15;
+// for the view at this pitch (current yaw): its look direction into `look`, and into `back` the direction from the
+// framed point back to the camera that shows the point at (camNdcX, camNdcY)
+function aimAt(pitch, tanV, aspect, look, back) {
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  look.set(camF.x * cp, sp, camF.z * cp);
+  camUp.set(-sp * camF.x, cp, -sp * camF.z);
+  back.copy(look).addScaledVector(camR, camNdcX * tanV * aspect).addScaledVector(camUp, camNdcY * tanV).normalize().negate();
+}
+function updateCamera(dt) {
+  camBasis();
+  if (state === 'title') { titleCamera(); cam.snap = true; return; }
+
+  const speed = p.vel.length(), aspect = camera.aspect;
+  // speed widens the view, but a dive keeps the hero close and readable (the vignette and wind carry its speed)
+  cam.fov = lerp(cam.fov, 66 + clamp((speed - 10) * 0.35, 0, anim.dive ? 10 : 24), 1 - Math.exp(-dt * 4));
+  const kt = simTime - p.webAt, kick = 1 + 0.08 * (kt < 0 || kt > 2 ? 0 : kt < 0.1 ? smoothstep(kt / 0.1) : Math.exp(-(kt - 0.1) * 4));
+  camera.fov = viewFov(cam.fov, kick, aspect);
+  const tanV = Math.tan(camera.fov * DEG / 2);
+  // near-plane corner radius: the camera sphere that keeps walls out of the near plane
+  const pad = 0.3 * Math.sqrt(1 + tanV * tanV * (1 + aspect * aspect)) + 0.1;
+
+  const want = anim.dive ? 5 : 6 + Math.min(speed, 70) * 0.04 + (p.wallRun ? 1.5 : 0);
+  camFrame.copy(drawPos); camFrame.y += 0.2;
+  if (!(camLag.x + camLag.y + camLag.z + cam.dist + cam.curD + camTilt < Infinity)) cam.snap = true;   // never stay NaN
+  if (cam.snap) { camLag.copy(camFrame); cam.dist = cam.curD = want; camTilt = 0; uCap = p.wallRun ? 0.03 : 0.15; cam.snap = false; }
+  cam.dist = lerp(cam.dist, want, 1 - Math.exp(-dt * 3));
+  camNdcX = lerp(CAM_NDC_X, PORTRAIT_NDC_X, clamp((1 - aspect) / 0.4, 0, 1));
+  camNdcY = CAM_NDC_Y + 0.2 * clamp((1 - aspect) * 2, 0, 1);
+  aimAt(cam.pitch - camTilt, tanV, aspect, viewDir, camBack);
+
+  // speed lag: the framed point trails the hero, soft-limited. Trailing behind only adds distance (up to 2 m);
+  // trailing to the side or up/down moves the hero about the frame, by up to 0.1 / 0.15 of the half-screen.
+  camLag.lerp(camFrame, 1 - Math.exp(-dt * 7));
+  camOff.subVectors(camLag, camFrame);
+  // sized for the distance the camera really is at (squeezed against a wall, an 8 m lag would throw the hero off screen);
+  // a wall run keeps the hero low, the wall above him in view (the limit eases over, so the hero doesn't hop)
+  const lagD = Math.max(0.3, Math.min(cam.dist, cam.curD));
+  uCap += ((p.wallRun ? 0.03 : 0.15) - uCap) * (1 - Math.exp(-dt * 5));
+  const maxS = 0.1 * tanV * aspect * lagD, maxU = uCap * tanV * lagD;
+  const lagBack = -2 * Math.tanh((camOff.x * camF.x + camOff.z * camF.z) / 2);
+  const ls = maxS * Math.tanh((camOff.x * camR.x + camOff.z * camR.z) / maxS);
+  camOff.set(camR.x * ls, maxU * Math.tanh(camOff.y / maxU), camR.z * ls);
+  camLag.copy(camFrame).add(camOff).addScaledVector(camF, -lagBack);
+  camGather(camFrame, want + 6 + Math.hypot(p.vel.x, p.vel.z) * 0.3);   // (out to where the forecast below looks)
+  const offL = camOff.length();
+  if (offL > 0.01) {   // the trailing point must be in the open, in sight of the hero
+    camAhead.copy(camOff).multiplyScalar(1 / offL);
+    const t = camCast(camFrame, camAhead, offL, pad);
+    if (t < offL) camOff.multiplyScalar(Math.max(0, t - 0.05) / offL);
+  }
+  cam.target.copy(camFrame).add(camOff);
+  camPushOut(cam.target, Math.max(0.9, pad + 0.05));
+
+  const dist = cam.dist / kick + lagBack;
+  const free = camFree(cam.target, camBack, dist, pad);
+  // squeezed (an alley, a nook, the street when looking up): while the auto camera is on, tilt the view down so the
+  // camera rises clear, as long as that actually opens up room; it eases back once there's space again
+  const w = state === 'play' ? followWeight() : 0;
+  let tiltGoal = 0;
+  if (w > 0 && free < dist * 0.6) {
+    aimAt(cam.pitch - camTilt - 0.4, tanV, aspect, camAhead, altBack);
+    tiltGoal = camFree(cam.target, altBack, dist, pad) > free + 1.5 ? Math.min(1, camTilt + 0.4) : camTilt;
+  }
+  camTilt += (tiltGoal - camTilt) * (1 - Math.exp(-dt * (tiltGoal > camTilt ? 2.5 * w : 1)));
+  // where the camera line will be 0.1, 0.2 and 0.3 s on (along the whole velocity, so a fall past a roof edge counts,
+  // but only as far as the framed point can really go): start easing in before a corner or ledge cuts it. The forecast
+  // alone never pulls in closer than 1.2 m.
+  let ahead = dist;
+  if (speed > 1) {
+    camGo.copy(p.vel).multiplyScalar(1 / speed);
+    const reach = Math.max(0, camCast(cam.target, camGo, speed * 0.3, 0.3) - 0.05);
+    for (let k = 1; k <= 3; k++) {
+      camAhead.copy(cam.target).addScaledVector(camGo, Math.min(reach, speed * 0.1 * k));
+      ahead = Math.min(ahead, camFree(camAhead, camBack, dist, pad));
+    }
+  }
+  const goal = Math.min(dist, free, Math.max(ahead, 1.2));
+  // in fast, out slowly (a little quicker when the camera is right on top of the hero). Only a blocked line of sight
+  // snaps it in at once: the near-plane sphere grazing a corner for a frame or two eases it in instead.
+  const rate = goal < cam.curD ? 12 : 2.2 + 4 * clamp(1 - cam.curD / 2.5, 0, 1);
+  cam.curD = Math.min(lerp(cam.curD, goal, 1 - Math.exp(-dt * rate)), camCast(cam.target, camBack, dist, 0.1));
+  cam.free = free;
+  hero.visible = cam.curD > 0.8;   // a camera inside the hero would show the inside of his mesh
+  camera.position.copy(cam.target).addScaledVector(camBack, cam.curD);
+  camera.lookAt(camAhead.copy(camera.position).add(viewDir));
+  camera.updateProjectionMatrix();
+  sky.position.copy(camera.position);
+  // the shadow square sits ahead of the hero, where the camera looks, and widens with altitude (with some hysteresis)
+  if (shadowLv < 2 && drawPos.y > SHADOW_UP[shadowLv]) shadowLv++;
+  else if (shadowLv > 0 && drawPos.y < SHADOW_UP[shadowLv - 1] - 15) shadowLv--;
+  const half = SHADOW_HALF[shadowLv];
+  placeSun(sunCenter.copy(drawPos).addScaledVector(camF, half * 0.5), half);
+
+  const vig = clamp((speed - 25) / 50, 0, 0.9).toFixed(2);
+  if (vig !== hudEl.vigVal) { hudEl.vigVal = vig; hudEl.vignette.style.opacity = vig; }
+  if (windGain && actx) windGain.gain.setTargetAtTime(muted || state !== 'play' ? 0 : clamp(Math.pow(speed / 70, 2) * 0.35, 0, 0.4), actx.currentTime, 0.1);
+}
+
+// ---------------------------------------------------------------- main loop
+let hudTimer = 0, last = performance.now(), testFreeze = false, crosshairZip = false;
+const hudEl = { spd: $('spd'), alt: $('alt'), tok: $('tok'), crosshair: $('crosshair'), vignette: $('vignette'), vigVal: '' };
+const zipLift = new V3();
+function simulate(dt, pad) {
+  clock += dt;
+
+  if (state === 'play') {
+    edgeLook(dt);
+    applyLook(dt);
+    let ix = 0, iz = 0;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) iz += 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) iz -= 1;
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) ix -= 1;
+    if (keys.has('KeyD') || keys.has('ArrowRight')) ix += 1;
+    if (stick.id !== null) { ix += stick.x; iz -= stick.y; }
+    if (pad) { ix += pad.x; iz -= pad.y; }
+    camBasis();
+    moveDir.set(0, 0, 0).addScaledVector(camF, iz).addScaledVector(camR, ix);
+    if (moveDir.lengthSq() > 1) moveDir.normalize();
+    input.swing = mouseSwing || touchSwing || padSwing || keys.has('ShiftLeft') || keys.has('ShiftRight');
+    input.dive = touchDive || padDive || keys.has('KeyC');
+    // presses are latched until a physics step uses them, since a fast frame can run no step at all
+    if (input.swing && !swingWas) swingTap = true;
+    swingWas = input.swing;
+    if (input.jumpPress) { jumpBuf = JUMP_BUFFER; jumpAt = simTime; }
+    if (input.zipPress) zipBuf = JUMP_BUFFER;
+
+    updateZipTarget();
+    simAcc += dt;
+    for (let n = 0; simAcc >= STEP - 1e-9 && n < MAX_STEPS; n++) {
+      camFollow(STEP);
+      camBasis();
+      moveDir.set(0, 0, 0).addScaledVector(camF, iz).addScaledVector(camR, ix);
+      if (moveDir.lengthSq() > 1) moveDir.normalize();
+      if (!p.onGround && !p.wallRun) edgeSteer(moveDir);
+      p.prev.copy(p.pos);
+      step(STEP);
+      collectTokens(p.prev, p.pos);
+      simAcc -= STEP;
+    }
+    simAcc = Math.min(simAcc, STEP);   // time beyond MAX_STEPS is dropped (below 10 fps the game slows down)
+    drawPos.lerpVectors(p.prev, p.pos, clamp(simAcc / STEP, 0, 1));
+    topSpeed = Math.max(topSpeed, p.vel.length());
+
+    hudTimer -= dt;
+    if (hudTimer <= 0) {
+      hudTimer = 0.1;
+      hudEl.spd.textContent = Math.round(p.vel.length() * 3.6);
+      hudEl.alt.textContent = Math.max(0, Math.round(p.pos.y - R));
+      hudEl.tok.textContent = tokensTaken;
+      mouseHint(0.1);
+    }
+    tipTimer -= dt;
+    if (tipTimer <= 0 && tipOn) { if (tipIdx < tips.length) nextTip(); else { $('tip').style.opacity = 0; tipOn = false; } }
+  }
+  input.jumpPress = input.zipPress = false;
+  input.lookX = input.lookY = 0;
+  if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) $('toast').style.opacity = 0; }
+
+  // the paused world holds still behind the menu
+  if (state !== 'paused') {
+    for (const t of tokens) {
+      if (t.taken) continue;
+      t.mesh.rotation.y = clock * 2 + t.mesh.userData.phase;
+      t.mesh.position.y = t.pos.y + Math.sin(clock * 2.5 + t.mesh.userData.phase) * 0.4;
+    }
+    animateHero(dt);
+  }
+  updateCamera(dt);
+  if (state === 'play') updateMarker(dt);
+
+  // web strands stay at least 2.6 px wide: radius per metre of depth for this view
+  webMat.uniforms.px.value = 1.3 * 2 * Math.tan(camera.fov * DEG / 2) / Math.max(1, innerHeight);
+  // the zip ring marks a ledge a zip would launch from; a plain wall point only turns the crosshair into a ring
+  const zipOk = state === 'play' && zipTarget && !p.zip && zipTarget.point.distanceTo(p.pos) > ZIP_MIN;
+  zipMarker.visible = !!(zipOk && zipTarget.launch);
+  if (zipMarker.visible) {
+    const sc = Math.max(0.5, camera.position.distanceTo(zipTarget.show) * 0.02) * (1 + 0.06 * Math.sin(clock * 7));
+    zipMarker.scale.setScalar(sc);
+    // standing on the ledge it marks and a little in front of it, so the roof and cornice don't cut the ring
+    zipMarker.position.copy(zipTarget.show).addScaledVector(zipLift.subVectors(camera.position, zipTarget.show).normalize(), sc * 1.1);
+    zipMarker.position.y += sc;
+    zipMarker.quaternion.copy(camera.quaternion);
+  }
+  const wallZip = !!(zipOk && !zipTarget.launch);
+  if (wallZip !== crosshairZip) { crosshairZip = wallZip; hudEl.crosshair.classList.toggle('zip', wallZip); }
+}
+function frame(now) {
+  requestAnimationFrame(frame);   // first, so an exception in one frame can't stop the game for good
+  const sec = (now - last) / 1000, dt = Math.min(MAX_STEPS * STEP, sec);
+  last = now;
+  if (!testFreeze) simulate(dt, pollPad(dt));
+  renderer.render(scene, camera);
+  adaptQuality(sec);
+}
+
+spawn();
+addRouteTokens();
+$('tok-total').textContent = tokens.length;
+addBeacons();
+animateHero(0.016);
+renderer.compile(scene, camera);   // every shader up front (webs, the zip ring and beacons), so the first swing doesn't stall
+requestAnimationFrame(frame);
+if (!isTouch) $('start-btn').focus({ preventScroll: true });   // (on a phone, focusing would scroll the title's heading away)
+
+// hook used by automated play tests
+//   p: player state; state: 'title' | 'play' | 'paused'
+//   run(seconds, held, frameDt = 1/60): plays exactly `seconds` of game time as frames of frameDt with those inputs held
+//     (held keys: KeyW KeyA KeyS KeyD KeyC ShiftLeft, swing = left mouse). Physics steps at PHYS_HZ underneath,
+//     so the frame rate doesn't change the simulation.
+//   press('jump' | 'zip'): a press read by the next frame
+//   added for movement tests: boxes (collision AABBs), cam (yaw, pitch, target), tokens ({ pos, taken }), PHYS_HZ,
+//     teleport([x,y,z], [vx,vy,vz], yaw, pitch): place the hero and clear movement state,
+//     findAnchor(): the anchor the next web would use from here, or null (changes no game state)
+//   added for camera tests: camera (the THREE.PerspectiveCamera), drawPos (the rendered hero position); cam.target is
+//     the point the camera frames (hero chest plus speed lag), cam.curD the camera distance after collision and
+//     cam.free the collision limit; look(dx, dy): mouse-look pixels for the next frame (counts as the player steering
+//     the camera, which pauses auto-follow); freeze(on): stop the real-time loop from advancing the game (it keeps
+//     rendering), so a screenshot shows exactly the state run() left
+//   added for visual tests: hero (the model's root group), heroBase (its orientation without flips and spins), anim
+//     (animation state: dive, cling, land, trick >= 0 while a flip or spin plays), joints (armL/armR/legL/legR
+//     { j1, j2, end }, spine, head),
+//     webs (the two strand meshes), webRadius(depth) (a strand's radius in metres at that view depth), zipMarker,
+//     zipTarget (null or { point, show, launch }), renderer, scene, sun (the shadow-casting light), input
+//   added for input/flow tests: pause(), resume() (as the Resume button; the mouse lock waits out Chrome's cooldown),
+//     lock ({ pending, unavailable, fails, lostAt, fresh }: pointer-lock state), quality ({ auto, lvl, ema, ... }; auto is off
+//     under automation) with QSTEPS (the rungs: { pr, shadow }), setQuality(i) and adaptQuality(frameSeconds) (feed
+//     it frame times to test the adaptive tier), marker (the nearest-token HUD marker: tok, on, edge, x, y),
+//     beacons (the instanced beacon mesh)
+window.__webSlinger = {
+  p, get state() { return state; }, boxes, cam, tokens, PHYS_HZ, camera, drawPos,
+  hero, heroBase, anim, joints, webs, webRadius, zipMarker, get zipTarget() { return zipTarget; }, renderer, scene, sun, input,
+  lock, quality, QSTEPS, setQuality, adaptQuality, marker, get beacons() { return beacons; },
+  pause() { pause(); }, resume() { resume(); },
+  look(dx, dy) { input.lookX += dx; input.lookY += dy; },
+  freeze(on = true) { testFreeze = on; },
+  run(seconds, held = {}, frameDt = 1 / 60) {
+    keys.clear(); Object.keys(held).forEach(k => held[k] && keys.add(k));
+    mouseSwing = !!held.swing;
+    const n = seconds > 0 ? Math.max(1, Math.round(seconds / frameDt)) : 0;
+    for (let i = 0; i < n; i++) simulate(frameDt, null);
+    mouseSwing = false; keys.clear();
+  },
+  press(kind) { if (kind === 'jump') input.jumpPress = true; else input.zipPress = true; },
+  teleport(pos, vel = [0, 0, 0], yaw = cam.yaw, pitch = 0.12) { teleport(new V3(...pos), new V3(...vel), yaw, pitch); },
+  findAnchor() { const a = findAnchor(); return a && { anchor: a.anchor.toArray(), pivot: a.pivot.toArray(), len: a.len }; }
+};
+})();
+</script>
+</body>
+</html>
