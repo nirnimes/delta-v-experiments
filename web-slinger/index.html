@@ -1066,7 +1066,8 @@ const view = renderer.domElement;
 // web. A sandbox that blocks the lock, or three refusals in a row, give up on it (lock.unavailable): clicks swing as
 // usual and resting the free cursor at a screen edge keeps turning the view.
 let cursorX = -1;   // the cursor's x while it's over the game (-1: outside), for turning at the screen edge without the lock
-const lock = { pending: false, reqAt: 0, unavailable: isTouch || !view.requestPointerLock, fails: 0, lostAt: -1e9, changedAt: -1e9, pageExit: false, noteT: 0 };
+// fresh: the lock was just asked for or changed and no mouse move has come since (see the mousemove handler)
+const lock = { pending: false, reqAt: 0, unavailable: isTouch || !view.requestPointerLock, fails: 0, lostAt: -1e9, changedAt: -1e9, fresh: false, pageExit: false, noteT: 0 };
 function lockPointer() {
   if (lock.unavailable || document.pointerLockElement) return;
   if (lock.pending) {
@@ -1074,7 +1075,7 @@ function lockPointer() {
     lockFailed(null);   // never answered: count it and ask again
     if (lock.unavailable) return;
   }
-  lock.pending = true; lock.reqAt = performance.now();
+  lock.pending = lock.fresh = true; lock.reqAt = performance.now();
   try {
     const r = view.requestPointerLock();
     if (r && r.catch) r.catch(lockFailed);
@@ -1087,7 +1088,7 @@ function lockFailed(err) {
   if (++lock.fails >= 3) lock.unavailable = true;
 }
 document.addEventListener('pointerlockchange', () => {
-  lock.pending = false; lock.changedAt = performance.now();
+  lock.pending = false; lock.fresh = true; lock.changedAt = performance.now();
   cursorX = -1;   // unknown until the free cursor moves again
   if (document.pointerLockElement) {
     lock.fails = 0;
@@ -1118,10 +1119,12 @@ addEventListener('mousemove', e => {
   const now = performance.now(), since = Math.min(now - lastMoveAt, 100);
   lastMoveAt = now;
   if (state !== 'play') return;
-  // Chrome can report the cursor's jump to the lock point as one huge movement, right after the lock changes, and now
-  // and then a stray spike: drop a move far beyond what a hand does in the time since the last one (moves are
-  // coalesced per frame, so a fast flick at a low frame rate still gets through)
-  const most = now - lock.changedAt < 150 ? 250 : 250 + 15 * since;
+  // Chrome can report the cursor's jump to the lock point as one huge movement, and now and then a stray spike: drop a
+  // move far beyond what a hand does in the time since the last one (moves are coalesced per frame, so a fast flick at
+  // a low frame rate still gets through). The jump comes as the first move around a lock change, whenever that is: just
+  // before the lock is granted or seconds after it, so the strict cap holds until that first move has come.
+  const most = lock.pending || lock.fresh || now - lock.changedAt < 150 ? 250 : 250 + 15 * since;
+  if (e.movementX || e.movementY) lock.fresh = false;
   if (Math.abs(e.movementX) > most || Math.abs(e.movementY) > most) return;
   // without the lock (not granted yet, refused, or blocked here) the free cursor still looks around
   input.lookX += e.movementX || 0; input.lookY += e.movementY || 0;
@@ -1441,24 +1444,28 @@ function gatherFaces(b, fwdMin) {
   }
 }
 const streetRay = new V3(), streetFrom = new V3();
-let pivotHeld = false;   // the last setPivot held the fulcrum in to PIVOT_OPEN from its facade
+let pivotHeld = false;   // the last setPivot held the fulcrum in to PIVOT_OPEN from its anchor, short of the hero's line
 // The swing's fulcrum. For a facade alongside the travel line it sits over the middle of the street, so the swing
 // carries you down the street instead of pulling you into the wall; otherwise it's the anchor with most of its
 // sideways offset from the travel line removed. With nothing across the street (a park, the waterfront) it sits over
-// the hero's line, but no more than PIVOT_OPEN out from the face (twice that if `open`).
+// the hero's line. Either way it moves no more than PIVOT_OPEN from the anchor (6 m more if `open`): much further, the
+// hero would hang under empty air with the drawn web running off level to the facade.
 function setPivot(o, out, open) {
-  const c = o.c, dx = c.x - p.pos.x, dz = c.z - p.pos.z;
+  const c = o.c, dx = c.x - p.pos.x, dz = c.z - p.pos.z, cap = open ? PIVOT_OPEN + 6 : PIVOT_OPEN;
   pivotHeld = false;
   if (Math.abs(o.nx * pref.x + o.nz * pref.z) < 0.5) {
     const heroOff = -(dx * o.nx + dz * o.nz);
     streetFrom.set(c.x + o.nx * 0.1, clamp(p.pos.y, 2, c.y - 1), c.z + o.nz * 0.1);
     const hit = raycast(streetFrom, streetRay.set(o.nx, 0, o.nz), 50);
-    pivotHeld = !hit && !open && heroOff > PIVOT_OPEN;
-    const off = hit ? hit.t / 2 : clamp(heroOff, 6, open ? 2 * PIVOT_OPEN : PIVOT_OPEN);
+    pivotHeld = !hit && !open && heroOff > cap;
+    const off = hit ? hit.t / 2 : clamp(heroOff, 6, cap);
     out.set(c.x + o.nx * off, c.y, c.z + o.nz * off);
   } else {
-    const f = dx * pref.x + dz * pref.z;
-    out.set(c.x - (dx - pref.x * f) * (1 - LAT_KEEP), c.y, c.z - (dz - pref.z * f) * (1 - LAT_KEEP));
+    const f = dx * pref.x + dz * pref.z, lx = dx - pref.x * f, lz = dz - pref.z * f;
+    const side = Math.hypot(lx, lz) * (1 - LAT_KEEP);
+    pivotHeld = !open && side > cap;
+    const k = (1 - LAT_KEEP) * Math.min(1, cap / Math.max(side, 1e-6));
+    out.set(c.x - lx * k, c.y, c.z - lz * k);
   }
   // never out over the city boundary: at most over the middle of the waterfront strip
   out.x = clamp(out.x, 5.5 - HALF, HALF - 5.5); out.z = clamp(out.z, 5.5 - HALF, HALF - 5.5);
@@ -1472,8 +1479,9 @@ function fillFound(o, open) {
   return found;
 }
 // Best gathered candidate the hero can see and whose swing stays clear. With `lateOk`, a swing that only touches
-// something after a full second is the fallback when nothing is clear.
-function pickAnchor(arcChecks, lateOk) {
+// something after a full second is the fallback when nothing is clear. With `noBack`, a swing that ends heading back
+// the way the hero is moving doesn't count.
+function pickAnchor(arcChecks, lateOk, noBack) {
   candOrder.length = 0;
   for (let i = 0; i < candN; i++) candOrder.push(i);
   candOrder.sort((a, b) => cand[a].score - cand[b].score);
@@ -1487,9 +1495,11 @@ function pickAnchor(arcChecks, lateOk) {
       if (found.len < ROPE_MIN) break;   // a fulcrum right by the hero: too short a rope to swing on
       arcs++;
       const t = swingContact(found.pivot, found.len, found.goal);
-      if (t === Infinity) return found;
-      if (lateOk && t > lateT) { late = i; lateT = t; lateOpen = open; }
-      // a fulcrum held in toward its facade can swing the hero into it: then try it out over his line after all
+      if (!noBack || aheadVel.x * p.vel.x + aheadVel.z * p.vel.z >= 0) {
+        if (t === Infinity) return found;
+        if (lateOk && t > lateT) { late = i; lateT = t; lateOpen = open; }
+      }
+      // a fulcrum held in toward its anchor can swing the hero into the facade: then try it further out after all
       if (open || !pivotHeld) break;
     }
   }
@@ -1526,10 +1536,12 @@ function findAnchor() {
   for (const b of query(p.pos.x, p.pos.z, 80)) gatherFaces(b, -6);
   const a = pickAnchor(10, true);
   if (a || p.vel.y > -15) return a;
-  // falling fast with nothing ahead: a facade behind will do (dropped off a tower, he webs that tower and swings out)
+  // falling fast with nothing ahead: a facade behind will do (dropped or bounded off a tower, he webs that tower and
+  // swings out). Moving on fast otherwise (a dive, a chain), a swing that throws him back the way he came is worse
+  // than the retry, which finds the next anchor ahead a few frames on.
   candN = 0;
   for (const b of query(p.pos.x, p.pos.z, 60)) gatherFaces(b, -30);
-  return pickAnchor(6, true);
+  return pickAnchor(6, true, hs > 15 && p.leaps === 0);
 }
 
 function attach() {
@@ -1601,7 +1613,7 @@ function landingSoon() {
   if (p.vel.y > 0) return false;
   let floor = 0;
   for (const b of query(p.pos.x, p.pos.z, 0))
-    if (p.pos.x > b.minX && p.pos.x < b.maxX && p.pos.z > b.minZ && p.pos.z < b.maxZ && b.maxY <= p.pos.y) floor = Math.max(floor, b.maxY);
+    if (!b.tree && p.pos.x > b.minX && p.pos.x < b.maxX && p.pos.z > b.minZ && p.pos.z < b.maxZ && b.maxY <= p.pos.y) floor = Math.max(floor, b.maxY);
   return p.pos.y - R - floor < 0.3 - p.vel.y * JUMP_BUFFER;
 }
 
@@ -1614,8 +1626,15 @@ function updateZipTarget() {
   // aim down the real camera ray, starting level with the hero: a camera pulled in by a wall must not start it inside a building
   camera.getWorldDirection(zipRay);
   zipFrom.copy(camera.position).addScaledVector(zipRay, Math.max(0, tmp2.subVectors(p.pos, camera.position).dot(zipRay)));
-  const hit = raycast(zipFrom, zipRay, 150);
-  if (!hit) return;
+  let hit = raycast(zipFrom, zipRay, 150), left = 150;
+  // a tree trunk's top is inside its crown, nothing to zip to: aim on past it, as the ray already passes through crowns
+  // (cast again from just inside the trunk, which the ray then skips)
+  for (let k = 0; hit && hit.box.tree && k < 4; k++) {
+    const t = hit.t + 0.05;
+    left -= t; zipFrom.addScaledVector(zipRay, t);
+    hit = left > 0 ? raycast(zipFrom, zipRay, left) : null;
+  }
+  if (!hit || hit.box.tree) return;
   const b = hit.box;
   // a ledge: a roof, the top of a wall, or (wall running) the top of the wall being climbed, if it isn't too far up
   const climbing = p.wallRun && b === p.wallRun.box && b.maxY - p.pos.y < 120;
@@ -1685,6 +1704,7 @@ function collide() {
     const dx = p.pos.x - cx, dy = p.pos.y - cy, dz = p.pos.z - cz;
     const d2 = dx * dx + dy * dy + dz * dz;
     if (d2 >= R * R) continue;
+    if (b.tree) { pushOffTrunk(b, dx, dy, dz); continue; }
     let nx, ny, nz;
     if (d2 > 1e-8) {
       const d = Math.sqrt(d2); nx = dx / d; ny = dy / d; nz = dz / d;
@@ -1703,7 +1723,7 @@ function collide() {
     const vn = p.vel.x * nx + p.vel.y * ny + p.vel.z * nz;
     if (vn < 0) { p.vel.x -= nx * vn; p.vel.y -= ny * vn; p.vel.z -= nz * vn; }
     if (ny > 0.6) p.onGround = true;
-    else if (Math.abs(ny) < 0.3 && !b.tree) {   // (a tree trunk only stops you: nothing to run up or cling to)
+    else if (Math.abs(ny) < 0.3) {
       p.wallN = wallNormal.set(nx, 0, nz).normalize(); p.wallBox = b;
       if (vn < 0) p.wallHit = Math.max(p.wallHit, -vn);
     }
@@ -1714,6 +1734,26 @@ function collide() {
   if (Math.abs(p.pos.z) > lim) { p.pos.z = Math.sign(p.pos.z) * lim; if (p.vel.z * p.pos.z > 0) p.vel.z *= -0.3; }
 }
 
+// A tree trunk only pushes you aside, never up: its top is inside the crown (nothing to stand on), and there's nothing
+// to run up or cling to. (dx, dy, dz): from the trunk's nearest point to the hero.
+function pushOffTrunk(b, dx, dy, dz) {
+  const need = Math.sqrt(R * R - dy * dy);   // the sideways gap that clears the sphere at this height
+  let h = Math.hypot(dx, dz);
+  if (h > 1e-4) {
+    dx /= h; dz /= h;
+  } else {
+    // centre over (or in) the trunk: off the side it's nearest, else the way he's going
+    const cx = (b.minX + b.maxX) / 2, cz = (b.minZ + b.maxZ) / 2;
+    dx = p.pos.x - cx; dz = p.pos.z - cz; h = Math.hypot(dx, dz);
+    if (h < 1e-4) { dx = p.vel.x; dz = p.vel.z; h = Math.hypot(dx, dz); if (h < 1e-4) { dx = 1; dz = 0; h = 1; } }
+    dx /= h; dz /= h;
+    const edge = Math.min((b.maxX - cx) / Math.max(Math.abs(dx), 1e-4), (b.maxZ - cz) / Math.max(Math.abs(dz), 1e-4));
+    p.pos.x = cx + dx * edge; p.pos.z = cz + dz * edge; h = 0;
+  }
+  p.pos.x += dx * (need - h); p.pos.z += dz * (need - h);
+  const vn = p.vel.x * dx + p.vel.z * dz;
+  if (vn < 0) { p.vel.x -= dx * vn; p.vel.z -= dz * vn; }
+}
 function startWallRun(carried) {
   p.wallRun = { n: p.wallN.clone(), box: p.wallBox, lost: 0, climb: clamp(carried * 0.7, 18, 40) };
   if (p.wallHit > 5) p.vel.y = Math.max(p.vel.y, 0) + Math.min(40, 0.7 * p.wallHit);   // a slam into the wall turns into climb
@@ -2434,7 +2474,7 @@ const CAM_NDC_X = 0.1, CAM_NDC_Y = -0.3;
 const SHADOW_HALF = [160, 240, 340], SHADOW_UP = [75, 145], sunCenter = new V3();
 let shadowLv = 0;
 let camNdcY = CAM_NDC_Y;
-const viewDir = new V3(), camUp = new V3(), camBack = new V3(), altBack = new V3(), camOff = new V3(), camLag = new V3(), camFrame = new V3(), camAhead = new V3();
+const viewDir = new V3(), camUp = new V3(), camBack = new V3(), altBack = new V3(), camOff = new V3(), camLag = new V3(), camFrame = new V3(), camAhead = new V3(), camGo = new V3();
 let camTilt = 0, uCap = 0.15;
 // for the view at this pitch (current yaw): its look direction into `look`, and into `back` the direction from the
 // framed point back to the camera that shows the point at (CAM_NDC_X, camNdcY)
@@ -2449,14 +2489,15 @@ function updateCamera(dt) {
   if (state === 'title') { titleCamera(); cam.snap = true; return; }
 
   const speed = p.vel.length(), aspect = camera.aspect;
-  cam.fov = lerp(cam.fov, 66 + clamp((speed - 10) * 0.35, 0, 24), 1 - Math.exp(-dt * 4));
+  // speed widens the view, but a dive keeps the hero close and readable (the vignette and wind carry its speed)
+  cam.fov = lerp(cam.fov, 66 + clamp((speed - 10) * 0.35, 0, anim.dive ? 10 : 24), 1 - Math.exp(-dt * 4));
   const kt = simTime - p.webAt, kick = 1 + 0.08 * (kt < 0 || kt > 2 ? 0 : kt < 0.1 ? smoothstep(kt / 0.1) : Math.exp(-(kt - 0.1) * 4));
   camera.fov = viewFov(cam.fov, kick, aspect);
   const tanV = Math.tan(camera.fov * DEG / 2);
   // near-plane corner radius: the camera sphere that keeps walls out of the near plane
   const pad = 0.3 * Math.sqrt(1 + tanV * tanV * (1 + aspect * aspect)) + 0.1;
 
-  const want = 6 + Math.min(speed, 70) * 0.04 + (p.wallRun ? 1.5 : 0);
+  const want = anim.dive ? 5 : 6 + Math.min(speed, 70) * 0.04 + (p.wallRun ? 1.5 : 0);
   camFrame.copy(drawPos); camFrame.y += 0.2;
   if (!(camLag.x + camLag.y + camLag.z + cam.dist + cam.curD + camTilt < Infinity)) cam.snap = true;   // never stay NaN
   if (cam.snap) { camLag.copy(camFrame); cam.dist = cam.curD = want; camTilt = 0; uCap = p.wallRun ? 0.03 : 0.15; cam.snap = false; }
@@ -2477,7 +2518,7 @@ function updateCamera(dt) {
   const ls = maxS * Math.tanh((camOff.x * camR.x + camOff.z * camR.z) / maxS);
   camOff.set(camR.x * ls, maxU * Math.tanh(camOff.y / maxU), camR.z * ls);
   camLag.copy(camFrame).add(camOff).addScaledVector(camF, -lagBack);
-  camGather(camFrame, want + 6 + Math.hypot(p.vel.x, p.vel.z) * 0.15);
+  camGather(camFrame, want + 6 + Math.hypot(p.vel.x, p.vel.z) * 0.3);   // (out to where the forecast below looks)
   const offL = camOff.length();
   if (offL > 0.01) {   // the trailing point must be in the open, in sight of the hero
     camAhead.copy(camOff).multiplyScalar(1 / offL);
@@ -2498,13 +2539,23 @@ function updateCamera(dt) {
     tiltGoal = camFree(cam.target, altBack, dist, pad) > free + 1.5 ? Math.min(1, camTilt + 0.4) : camTilt;
   }
   camTilt += (tiltGoal - camTilt) * (1 - Math.exp(-dt * (tiltGoal > camTilt ? 2.5 * w : 1)));
-  // where the camera line will be in 0.15 s: start easing in before a corner cuts it
-  camAhead.set(cam.target.x + p.vel.x * 0.15, cam.target.y, cam.target.z + p.vel.z * 0.15);
-  const ahead = camFree(camAhead, camBack, dist, pad);
-  const goal = Math.min(dist, free, ahead);
-  // in fast, out slowly (a little quicker when the camera is right on top of the hero)
+  // where the camera line will be 0.1, 0.2 and 0.3 s on (along the whole velocity, so a fall past a roof edge counts,
+  // but only as far as the framed point can really go): start easing in before a corner or ledge cuts it. The forecast
+  // alone never pulls in closer than 1.2 m.
+  let ahead = dist;
+  if (speed > 1) {
+    camGo.copy(p.vel).multiplyScalar(1 / speed);
+    const reach = Math.max(0, camCast(cam.target, camGo, speed * 0.3, 0.3) - 0.05);
+    for (let k = 1; k <= 3; k++) {
+      camAhead.copy(cam.target).addScaledVector(camGo, Math.min(reach, speed * 0.1 * k));
+      ahead = Math.min(ahead, camFree(camAhead, camBack, dist, pad));
+    }
+  }
+  const goal = Math.min(dist, free, Math.max(ahead, 1.2));
+  // in fast, out slowly (a little quicker when the camera is right on top of the hero). Only a blocked line of sight
+  // snaps it in at once: the near-plane sphere grazing a corner for a frame or two eases it in instead.
   const rate = goal < cam.curD ? 12 : 2.2 + 4 * clamp(1 - cam.curD / 2.5, 0, 1);
-  cam.curD = Math.min(lerp(cam.curD, goal, 1 - Math.exp(-dt * rate)), free);
+  cam.curD = Math.min(lerp(cam.curD, goal, 1 - Math.exp(-dt * rate)), camCast(cam.target, camBack, dist, 0.1));
   cam.free = free;
   hero.visible = cam.curD > 0.8;   // a camera inside the hero would show the inside of his mesh
   camera.position.copy(cam.target).addScaledVector(camBack, cam.curD);
@@ -2648,7 +2699,7 @@ if (!isTouch) $('start-btn').focus({ preventScroll: true });   // (on a phone, f
 //     webs (the two strand meshes), webRadius(depth) (a strand's radius in metres at that view depth), zipMarker,
 //     zipTarget (null or { point, show, launch }), renderer, scene, sun (the shadow-casting light), input
 //   added for input/flow tests: pause(), resume() (as the Resume button; the mouse lock waits out Chrome's cooldown),
-//     lock ({ pending, unavailable, fails, lostAt }: pointer-lock state), quality ({ auto, lvl, ema, ... }; auto is off
+//     lock ({ pending, unavailable, fails, lostAt, fresh }: pointer-lock state), quality ({ auto, lvl, ema, ... }; auto is off
 //     under automation) with QSTEPS (the rungs: { pr, shadow }), setQuality(i) and adaptQuality(frameSeconds) (feed
 //     it frame times to test the adaptive tier), marker (the nearest-token HUD marker: tok, on, edge, x, y),
 //     beacons (the instanced beacon mesh)
